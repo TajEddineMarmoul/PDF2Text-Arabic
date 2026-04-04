@@ -13,18 +13,22 @@ import fitz
 from ._text import build_row_text, clean_arabic, merge_lines_by_y
 
 
-def _extract_cell_text(page, cell_bbox, extract_ref: str = "") -> str:
+def _extract_cell_text(page, cell_bbox, extract_ref: str = "", rawdict=None) -> str:
     """Extract Arabic text from a table cell using the full rawdict pipeline.
 
     *extract_ref* is the raw visual-LTR text from find_tables().extract() for
     the same cell, used to detect stray trailing chars from lam-alef ligature
     artifacts that leak across cell boundaries.
+
+    *rawdict* is an optional pre-fetched rawdict for the table region.  When
+    supplied the expensive ``page.get_text("rawdict")`` call is skipped.
     """
     if cell_bbox is None:
         return ""
     x0, y0, x1, y1 = cell_bbox
-    clip = fitz.Rect(cell_bbox)
-    rawdict = page.get_text("rawdict", clip=clip)
+    if rawdict is None:
+        clip = fitz.Rect(cell_bbox)
+        rawdict = page.get_text("rawdict", clip=clip)
 
     lines_all: list = []
     for block in rawdict["blocks"]:
@@ -101,6 +105,10 @@ def extract_tables(page, clip=None) -> tuple[list[tuple[float, str]], list[tuple
 
         raw_extract = table.extract()
 
+        # Fetch rawdict once for the entire table region.
+        table_clip = fitz.Rect(table.bbox)
+        table_rawdict = page.get_text("rawdict", clip=table_clip)
+
         # Build grid with merged-cell tracking (RTL column order)
         grid: list[list[str]] = []
         merged: list[list[bool]] = []
@@ -115,7 +123,11 @@ def extract_tables(page, clip=None) -> tuple[list[tuple[float, str]], list[tuple
                     row_merged.append(True)
                 else:
                     ref = raw_extract[ri][orig_ci] if raw_extract[ri][orig_ci] else ""
-                    row_cells.append(_extract_cell_text(page, cell, extract_ref=ref))
+                    row_cells.append(
+                        _extract_cell_text(
+                            page, cell, extract_ref=ref, rawdict=table_rawdict
+                        )
+                    )
                     row_merged.append(False)
             grid.append(row_cells)
             merged.append(row_merged)

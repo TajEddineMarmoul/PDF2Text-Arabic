@@ -1,4 +1,4 @@
-# pdfarabic
+# PDF2Text-Arabic
 
 Arabic PDF text extraction built on PyMuPDF. Fixes ligature decomposition, RTL ordering, table extraction, and other issues that make raw PyMuPDF output unusable for Arabic.
 
@@ -18,6 +18,11 @@ Arabic PDF text extraction built on PyMuPDF. Fixes ligature decomposition, RTL o
 ## Install
 
 ```bash
+pip install pdf2text-arabic
+```
+
+From source:
+```bash
 pip install .
 # or with uv
 uv pip install .
@@ -28,7 +33,7 @@ uv pip install .
 ### Python API
 
 ```python
-from pdfarabic import extract_pdf, extract_page
+from pdf2text_arabic import extract_pdf, extract_page
 
 # Extract entire PDF
 text = extract_pdf("document.pdf")
@@ -47,7 +52,7 @@ text = extract_pdf("document.pdf", detect_footer=False)
 
 ```python
 import fitz
-from pdfarabic import extract_page
+from pdf2text_arabic import extract_page
 
 doc = fitz.open("document.pdf")
 text = extract_page(doc[0], crop_top=50, crop_bottom=30)
@@ -58,16 +63,16 @@ doc.close()
 
 ```bash
 # Process all PDFs in a directory
-pdfarabic -i ./download -o ./output/plain_text
+pdf2text-arabic -i ./download -o ./output/plain_text
 
 # Single file
-pdfarabic -f document.pdf -o ./output
+pdf2text-arabic -f document.pdf -o ./output
 
 # With cropping
-pdfarabic -i ./download --crop-top 50 --crop-bottom 30
+pdf2text-arabic -i ./download --crop-top 50 --crop-bottom 30
 
 # Crop by percentage, no footer detection
-pdfarabic -i ./download --crop-top 5 --crop-bottom 3 --crop-unit pct --no-footer
+pdf2text-arabic -i ./download --crop-top 5 --crop-bottom 3 --crop-unit pct --no-footer
 ```
 
 ## API reference
@@ -112,7 +117,7 @@ Crop headers and page numbers by fixed pixel amount or percentage of page height
 ## Project structure
 
 ```
-pdfarabic/
+pdf2text_arabic/
 ├── __init__.py    # Public API: extract_pdf, extract_page
 ├── _chars.py      # Character-level ligature/overlap fixes
 ├── _text.py       # RTL text building, cleaning, line merging
@@ -125,15 +130,11 @@ pdfarabic/
 ## Integration with other projects
 
 ```bash
-# Install as dependency (editable for development)
-pip install -e /path/to/pdfarabic
-
-# Or in pyproject.toml
-# dependencies = ["pdfarabic @ file:///path/to/pdfarabic"]
+pip install pdf2text-arabic
 ```
 
 ```python
-from pdfarabic import extract_pdf
+from pdf2text_arabic import extract_pdf
 
 def extract_law_text(path: str) -> str:
     return extract_pdf(path, crop_top=50, crop_bottom=30, detect_footer=True)

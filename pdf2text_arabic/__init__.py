@@ -1,7 +1,7 @@
 """Arabic PDF text extraction with PyMuPDF ligature and RTL fixes.
 
 Usage:
-    from pdfarabic import extract_pdf, extract_page
+    from pdf2text_arabic import extract_pdf, extract_page
 
     text = extract_pdf("document.pdf")
 """
