@@ -48,6 +48,26 @@ text = extract_pdf("document.pdf", crop_top=5, crop_bottom=3, crop_unit="pct")
 text = extract_pdf("document.pdf", detect_footer=False)
 ```
 
+### AI-friendly API (recommended for agents)
+
+```python
+from pdf2text_arabic import extract_pdf_result, get_capabilities
+
+caps = get_capabilities()
+result = extract_pdf_result("document.pdf", on_empty="warn")
+
+print(result.pages_total)
+print(result.pages_with_text)
+print(result.empty_pages)
+print(result.warnings)
+print(result.text)
+```
+
+Agent contract:
+- Prefer `extract_pdf_result()` over parsing logs.
+- Do not manually reorder Arabic text after extraction.
+- Use `get_capabilities()` before enabling OCR-specific behavior.
+
 ### Single page
 
 ```python
@@ -92,6 +112,16 @@ Extract text from all pages of a PDF.
 ### `extract_page(page, **kwargs) → str`
 
 Extract text from a single `fitz.Page`. Same parameters as `extract_pdf` (except `pdf_path`).
+
+### `extract_pdf_result(pdf_path, **kwargs) → ExtractionResult`
+
+Structured output for AI/automation:
+
+- `text`: final extracted text
+- `pages_total`: total page count
+- `pages_with_text`: number of non-empty extracted pages
+- `empty_pages`: list of page numbers that produced empty output
+- `warnings`: machine-readable warning tokens (example: `empty_page:3`)
 
 ## Features
 

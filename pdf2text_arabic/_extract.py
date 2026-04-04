@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import logging
+from pathlib import Path
 import re
 from typing import Literal
 
@@ -26,6 +28,37 @@ _SUPERSCRIPT_MAX_PT = 10
 _EMPTY_TEXT_THRESHOLD = 30
 
 _PAGE_NUMBER_RE = re.compile(r"^[\s\-–—]*\d+[\s\-–—]*$")
+
+
+class PDFArabicError(Exception):
+    """Base exception for pdf2text-arabic failures."""
+
+
+class InvalidPDFPathError(PDFArabicError):
+    """Raised when a PDF path is missing, invalid, or unreadable."""
+
+
+class OCRUnavailableError(PDFArabicError):
+    """Raised when OCR is requested but unavailable in the runtime."""
+
+
+@dataclass(slots=True)
+class ExtractionResult:
+    """Structured extraction result for AI and downstream automation.
+
+    Attributes:
+        text: Final extracted text from non-empty pages.
+        pages_total: Number of pages in the input PDF.
+        pages_with_text: Number of pages that produced non-empty text.
+        empty_pages: 1-based page numbers that produced empty text.
+        warnings: Machine-readable warning messages.
+    """
+
+    text: str
+    pages_total: int
+    pages_with_text: int
+    empty_pages: list[int]
+    warnings: list[str]
 
 
 def _is_superscript(span: dict) -> bool:
@@ -90,6 +123,20 @@ def _ocr_page(page, clip: fitz.Rect, language: str = "ara") -> str:
     except Exception as exc:
         log.warning("OCR failed on page %d: %s", page.number + 1, exc)
         return ""
+
+
+def get_capabilities() -> dict[str, bool | str]:
+    """Return runtime capabilities for feature-aware callers.
+
+    This helper is intended for agents and orchestration code to determine
+    whether optional features like OCR are available before choosing options.
+    """
+    return {
+        "tables": True,
+        "footer_detection": True,
+        "ocr": hasattr(fitz.Page, "get_textpage_ocr"),
+        "recommended_import": "from pdf2text_arabic import extract_pdf, extract_pdf_result",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -223,8 +270,50 @@ def extract_pdf(
     Returns:
         The full extracted text with pages separated by double newlines.
     """
-    doc = fitz.open(pdf_path)
+    return extract_pdf_result(
+        pdf_path,
+        crop_top=crop_top,
+        crop_bottom=crop_bottom,
+        crop_unit=crop_unit,
+        detect_footer=detect_footer,
+        on_empty=on_empty,
+        ocr_language=ocr_language,
+    ).text
+
+
+def extract_pdf_result(
+    pdf_path: str,
+    *,
+    crop_top: float = 0,
+    crop_bottom: float = 0,
+    crop_unit: Literal["px", "pct"] = "px",
+    detect_footer: bool = True,
+    on_empty: Literal["ignore", "warn", "ocr"] = "warn",
+    ocr_language: str = "ara",
+) -> ExtractionResult:
+    """Extract Arabic text and return structured metadata.
+
+    This is the preferred API for AI agents and automation because it includes
+    predictable metadata in addition to plain text.
+    """
+    path = Path(pdf_path)
+    if not path.exists() or not path.is_file():
+        raise InvalidPDFPathError(f"PDF path not found: {pdf_path}")
+
+    if on_empty == "ocr" and not hasattr(fitz.Page, "get_textpage_ocr"):
+        raise OCRUnavailableError(
+            "OCR requested (on_empty='ocr') but runtime OCR support is unavailable"
+        )
+
+    try:
+        doc = fitz.open(pdf_path)
+    except Exception as exc:
+        raise InvalidPDFPathError(f"Could not open PDF: {pdf_path}") from exc
+
     pages: list[str] = []
+    empty_pages: list[int] = []
+    warnings: list[str] = []
+
     for page in doc:
         text = extract_page(
             page,
@@ -237,5 +326,18 @@ def extract_pdf(
         )
         if text.strip():
             pages.append(text)
+        else:
+            page_no = page.number + 1
+            empty_pages.append(page_no)
+            warnings.append(f"empty_page:{page_no}")
+
+    pages_total = len(doc)
     doc.close()
-    return "\n\n".join(pages)
+
+    return ExtractionResult(
+        text="\n\n".join(pages),
+        pages_total=pages_total,
+        pages_with_text=len(pages),
+        empty_pages=empty_pages,
+        warnings=warnings,
+    )
