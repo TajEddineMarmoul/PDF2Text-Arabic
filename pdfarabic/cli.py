@@ -33,6 +33,29 @@ def main():
         action="store_true",
         help="Enable OCR fallback for pages with no extractable text.",
     )
+    parser.add_argument(
+        "--crop-top",
+        type=float,
+        default=0,
+        help="Crop from top of each page (default: 0).",
+    )
+    parser.add_argument(
+        "--crop-bottom",
+        type=float,
+        default=0,
+        help="Crop from bottom of each page (default: 0).",
+    )
+    parser.add_argument(
+        "--crop-unit",
+        choices=["px", "pct"],
+        default="px",
+        help="Unit for crop values: 'px' (points) or 'pct' (percent) (default: px).",
+    )
+    parser.add_argument(
+        "--no-footer",
+        action="store_true",
+        help="Disable automatic footnote separator detection.",
+    )
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -57,7 +80,14 @@ def main():
 
     for pdf_path, filename in files:
         try:
-            text = extract_pdf(pdf_path, ocr_if_needed=args.ocr)
+            text = extract_pdf(
+                pdf_path,
+                crop_top=args.crop_top,
+                crop_bottom=args.crop_bottom,
+                crop_unit=args.crop_unit,
+                detect_footer=not args.no_footer,
+                ocr_if_needed=args.ocr,
+            )
             out_name = os.path.splitext(filename)[0] + ".txt"
             out_path = os.path.join(args.output_dir, out_name)
             with open(out_path, "w", encoding="utf-8") as f:
