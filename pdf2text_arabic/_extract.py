@@ -121,8 +121,16 @@ def _ocr_page(page, clip: fitz.Rect, language: str = "ara") -> str:
         lines = [ln for ln in text.splitlines() if not _PAGE_NUMBER_RE.match(ln)]
         return "\n".join(lines).strip()
     except Exception as exc:
-        log.warning("OCR failed on page %d: %s", page.number + 1, exc)
+        log.warning("OCR failed on page %d: %s", _page_number(page), exc)
         return ""
+
+
+def _page_number(page) -> int:
+    """Return a safe 1-based page number for logs and metadata."""
+    number = getattr(page, "number", None)
+    if isinstance(number, int) and number >= 0:
+        return number + 1
+    return 1
 
 
 def get_capabilities() -> dict[str, bool | str]:
@@ -175,7 +183,7 @@ def extract_page(
 
     # --- Empty / image-only page detection ---
     if _is_empty_page(page, clip):
-        page_num = page.number + 1
+        page_num = _page_number(page)
         if on_empty == "ocr":
             ocr_text = _ocr_page(page, clip, language=ocr_language)
             if ocr_text:
@@ -327,7 +335,7 @@ def extract_pdf_result(
         if text.strip():
             pages.append(text)
         else:
-            page_no = page.number + 1
+            page_no = _page_number(page)
             empty_pages.append(page_no)
             warnings.append(f"empty_page:{page_no}")
 
