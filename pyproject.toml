@@ -1,0 +1,10 @@
+[project]
+name = "pdfarabic"
+version = "0.1.0"
+description = "Arabic PDF text extraction with ligature and RTL fixes"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = ["pymupdf>=1.27.2.2", "tqdm>=4.67.3"]
+
+[project.scripts]
+pdfarabic = "pdfarabic.cli:main"
