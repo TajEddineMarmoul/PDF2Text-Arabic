@@ -1,6 +1,7 @@
 """Command-line interface for Arabic PDF extraction."""
 
 import argparse
+import logging
 import os
 import sys
 
@@ -29,11 +30,6 @@ def main():
         help="Process a single PDF file instead of a directory.",
     )
     parser.add_argument(
-        "--ocr",
-        action="store_true",
-        help="Enable OCR fallback for pages with no extractable text.",
-    )
-    parser.add_argument(
         "--crop-top",
         type=float,
         default=0,
@@ -56,7 +52,29 @@ def main():
         action="store_true",
         help="Disable automatic footnote separator detection.",
     )
+    parser.add_argument(
+        "--on-empty",
+        choices=["ignore", "warn", "ocr"],
+        default="warn",
+        help=(
+            "How to handle image-only pages: "
+            "'ignore' (skip silently), "
+            "'warn' (log + skip), "
+            "'ocr' (try Tesseract OCR, warn if still empty). "
+            "Default: warn."
+        ),
+    )
+    parser.add_argument(
+        "--ocr-language",
+        default="ara",
+        help="Tesseract language code(s) for OCR (default: ara).",
+    )
     args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.WARNING,
+        format="  ⚠ %(message)s",
+    )
 
     os.makedirs(args.output_dir, exist_ok=True)
 
@@ -86,7 +104,8 @@ def main():
                 crop_bottom=args.crop_bottom,
                 crop_unit=args.crop_unit,
                 detect_footer=not args.no_footer,
-                ocr_if_needed=args.ocr,
+                on_empty=args.on_empty,
+                ocr_language=args.ocr_language,
             )
             out_name = os.path.splitext(filename)[0] + ".txt"
             out_path = os.path.join(args.output_dir, out_name)

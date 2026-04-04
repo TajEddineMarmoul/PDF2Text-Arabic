@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import re
 from typing import Literal
 
 import fitz
@@ -11,6 +13,27 @@ from ._tables import extract_tables
 from ._text import build_row_text, clean_arabic, merge_lines_by_y
 
 fitz.TOOLS.set_small_glyph_heights(True)
+
+log = logging.getLogger(__name__)
+
+# Superscript reference numbers: spans with size ≤ this AND digit-only
+# text are stripped from body text.  Tables are unaffected (separate path).
+_SUPERSCRIPT_MAX_PT = 10
+
+# A page is considered "empty" (image-only) when its extractable text,
+# after stripping page-number patterns like  -10- , has fewer characters
+# than this threshold.
+_EMPTY_TEXT_THRESHOLD = 30
+
+_PAGE_NUMBER_RE = re.compile(r"^[\s\-–—]*\d+[\s\-–—]*$")
+
+
+def _is_superscript(span: dict) -> bool:
+    """Return True if *span* looks like a footnote superscript indicator."""
+    if round(span.get("size", 0)) > _SUPERSCRIPT_MAX_PT:
+        return False
+    text = "".join(c.get("c", "") for c in span.get("chars", [])).strip()
+    return len(text) > 0 and text.isdigit()
 
 
 # ---------------------------------------------------------------------------
@@ -35,6 +58,40 @@ def _compute_clip(
     return fitz.Rect(page_rect.x0, top, page_rect.x1, bottom)
 
 
+def _is_empty_page(page, clip: fitz.Rect) -> bool:
+    """Return True if *page* has no meaningful text (image-only / scanned).
+
+    A page is empty when its text content (ignoring page-number patterns
+    like ``-10-``) is shorter than ``_EMPTY_TEXT_THRESHOLD`` characters AND
+    the page contains at least one image.
+    """
+    if not page.get_images():
+        return False  # no images → normal text page (even if short)
+    raw = page.get_text("text", clip=clip).strip()
+    # Strip lines that look like page numbers
+    meaningful = "\n".join(
+        ln for ln in raw.splitlines() if not _PAGE_NUMBER_RE.match(ln)
+    ).strip()
+    return len(meaningful) < _EMPTY_TEXT_THRESHOLD
+
+
+def _ocr_page(page, clip: fitz.Rect, language: str = "ara") -> str:
+    """Try to OCR *page* using Tesseract via PyMuPDF.
+
+    Returns extracted text, or empty string if Tesseract is not available
+    or OCR yields nothing.
+    """
+    try:
+        tp = page.get_textpage_ocr(flags=0, language=language, full=True)
+        text = page.get_text("text", clip=clip, textpage=tp).strip()
+        # Strip page-number lines
+        lines = [ln for ln in text.splitlines() if not _PAGE_NUMBER_RE.match(ln)]
+        return "\n".join(lines).strip()
+    except Exception as exc:
+        log.warning("OCR failed on page %d: %s", page.number + 1, exc)
+        return ""
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -47,6 +104,8 @@ def extract_page(
     crop_bottom: float = 0,
     crop_unit: Literal["px", "pct"] = "px",
     detect_footer: bool = True,
+    on_empty: Literal["ignore", "warn", "ocr"] = "warn",
+    ocr_language: str = "ara",
 ) -> str:
     """Extract corrected Arabic text from one PyMuPDF page.
 
@@ -57,14 +116,45 @@ def extract_page(
         crop_unit: ``"px"`` for points/pixels, ``"pct"`` for percentage of
             page height.
         detect_footer: When *True*, automatically detect a footnote separator
-            line (``------``) and exclude everything below it.
+            line and exclude everything below it.
+        on_empty: What to do when a page has images but no extractable text:
+            ``"ignore"`` — silently return empty string.
+            ``"warn"`` — log a warning and return empty string.
+            ``"ocr"`` — attempt OCR via Tesseract; if that still yields
+            nothing, log a warning and return empty string.
+        ocr_language: Tesseract language code(s) for OCR (default ``"ara"``).
     """
     clip = _compute_clip(page.rect, crop_top, crop_bottom, crop_unit)
 
+    # --- Empty / image-only page detection ---
+    if _is_empty_page(page, clip):
+        page_num = page.number + 1
+        if on_empty == "ocr":
+            ocr_text = _ocr_page(page, clip, language=ocr_language)
+            if ocr_text:
+                return ocr_text
+            log.warning("Page %d: image-only, OCR returned no text", page_num)
+            return ""
+        if on_empty == "warn":
+            log.warning("Page %d: image-only, no extractable text", page_num)
+        return ""
+
     if detect_footer:
-        footer_y = detect_footer_y(page, clip)
+        footer_y, guaranteed = detect_footer_y(page, clip)
         if footer_y is not None:
-            clip = fitz.Rect(clip.x0, clip.y0, clip.x1, footer_y - 1)
+            apply_crop = True
+            if not guaranteed:
+                # Safety: table borders can look like footer separators.
+                # Skip when superscript-guaranteed (footnote zones can be
+                # falsely matched as "tables" by find_tables).
+                tabs = page.find_tables(clip=clip)
+                for table in tabs.tables:
+                    tx0, ty0, tx1, ty1 = table.bbox
+                    if ty0 <= footer_y <= ty1:
+                        apply_crop = False
+                        break
+            if apply_crop:
+                clip = fitz.Rect(clip.x0, clip.y0, clip.x1, footer_y - 1)
 
     table_entries, t_bboxes = extract_tables(page, clip=clip)
 
@@ -91,7 +181,8 @@ def extract_page(
 
         lines_text: list[str] = []
         for row in rows:
-            text = build_row_text(row["spans"])
+            spans = [s for s in row["spans"] if not _is_superscript(s)]
+            text = build_row_text(spans)
             text = clean_arabic(text).strip()
             if text:
                 lines_text.append(text)
@@ -114,6 +205,8 @@ def extract_pdf(
     crop_bottom: float = 0,
     crop_unit: Literal["px", "pct"] = "px",
     detect_footer: bool = True,
+    on_empty: Literal["ignore", "warn", "ocr"] = "warn",
+    ocr_language: str = "ara",
 ) -> str:
     """Extract Arabic text from a PDF file.
 
@@ -123,6 +216,9 @@ def extract_pdf(
         crop_bottom: Amount to crop from the bottom of every page.
         crop_unit: ``"px"`` for points/pixels, ``"pct"`` for percentage.
         detect_footer: Auto-detect footnote separator lines and crop below.
+        on_empty: How to handle image-only pages (``"ignore"``, ``"warn"``,
+            or ``"ocr"``).
+        ocr_language: Tesseract language code(s) for OCR (default ``"ara"``).
 
     Returns:
         The full extracted text with pages separated by double newlines.
@@ -136,6 +232,8 @@ def extract_pdf(
             crop_bottom=crop_bottom,
             crop_unit=crop_unit,
             detect_footer=detect_footer,
+            on_empty=on_empty,
+            ocr_language=ocr_language,
         )
         if text.strip():
             pages.append(text)
