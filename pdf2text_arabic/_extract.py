@@ -18,9 +18,14 @@ fitz.TOOLS.set_small_glyph_heights(True)
 
 log = logging.getLogger(__name__)
 
-# Superscript reference numbers: spans with size ≤ this AND digit-only
-# text are stripped from body text.  Tables are unaffected (separate path).
-_SUPERSCRIPT_MAX_PT = 10
+# Superscript detection: a digit-only span is treated as a footnote
+# indicator when its font size is ≤ this fraction of the page's dominant
+# body font size.  E.g. 0.75 means anything ≤ 75% of body size is super.
+_SUPERSCRIPT_SIZE_RATIO = 0.75
+
+# Absolute ceiling: never strip digit spans larger than this, even if the
+# ratio check would flag them (guards against tiny-body-font edge cases).
+_SUPERSCRIPT_ABS_CEIL = 13
 
 # A page is considered "empty" (image-only) when its extractable text,
 # after stripping page-number patterns like  -10- , has fewer characters
@@ -61,12 +66,53 @@ class ExtractionResult:
     warnings: list[str]
 
 
-def _is_superscript(span: dict) -> bool:
-    """Return True if *span* looks like a footnote superscript indicator."""
-    if round(span.get("size", 0)) > _SUPERSCRIPT_MAX_PT:
+def _is_superscript(span: dict, body_size: float) -> bool:
+    """Return True if *span* looks like a footnote superscript indicator.
+
+    Uses a ratio of the page's dominant body font size so the detection
+    adapts to any document regardless of its base font size.
+    """
+    sz = span.get("size", 0)
+    if sz > _SUPERSCRIPT_ABS_CEIL:
+        return False
+    if body_size > 0 and sz > body_size * _SUPERSCRIPT_SIZE_RATIO:
         return False
     text = "".join(c.get("c", "") for c in span.get("chars", [])).strip()
     return len(text) > 0 and text.isdigit()
+
+
+def _body_font_size(rawdict: dict, t_bboxes: list[tuple]) -> float:
+    """Determine the dominant body font size from non-table text blocks.
+
+    Returns 0 if no usable text is found (caller should skip filtering).
+    """
+    size_chars: dict[int, int] = {}
+    for block in rawdict.get("blocks", []):
+        if "lines" not in block:
+            continue
+        bx0, by0, bx1, by1 = block["bbox"]
+        # Skip blocks inside tables
+        in_table = False
+        for tx0, ty0, tx1, ty1 in t_bboxes:
+            bcx = (bx0 + bx1) / 2
+            bcy = (by0 + by1) / 2
+            if tx0 <= bcx <= tx1 and ty0 <= bcy <= ty1:
+                in_table = True
+                break
+        if in_table:
+            continue
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                txt = span.get("text", "")
+                if not txt or not txt.strip():
+                    continue
+                sz = round(span.get("size", 0))
+                if sz >= 20:  # skip headings
+                    continue
+                size_chars[sz] = size_chars.get(sz, 0) + len(txt)
+    if not size_chars:
+        return 0
+    return max(size_chars.items(), key=lambda item: item[1])[0]
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +260,7 @@ def extract_page(
     table_entries, t_bboxes = extract_tables(page, clip=clip)
 
     rawdict = page.get_text("rawdict", clip=clip)
+    body_size = _body_font_size(rawdict, t_bboxes)
     pieces: list[tuple[float, str]] = []
 
     for block in rawdict["blocks"]:
@@ -236,7 +283,7 @@ def extract_page(
 
         lines_text: list[str] = []
         for row in rows:
-            spans = [s for s in row["spans"] if not _is_superscript(s)]
+            spans = [s for s in row["spans"] if not _is_superscript(s, body_size)]
             text = build_row_text(spans)
             text = clean_arabic(text).strip()
             if text:

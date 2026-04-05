@@ -21,16 +21,42 @@ import fitz
 # Heading sizes are excluded when determining the body font size.
 _HEADING_SIZE_MIN = 20
 
-# Maximum pt size for a span to be considered a superscript indicator.
-_SUPERSCRIPT_MAX_PT = 10
+# Superscript ratio: a digit span is a superscript when its size is
+# ≤ this fraction of the page's dominant body font size.
+_SUPERSCRIPT_SIZE_RATIO = 0.75
+
+# Absolute ceiling for superscript detection (same as _extract.py).
+_SUPERSCRIPT_ABS_CEIL = 13
+
+
+def _page_body_size(data: dict) -> float:
+    """Compute the dominant body font size from rawdict data.
+
+    Returns 0 when no usable text is found.
+    """
+    size_chars: dict[int, int] = {}
+    for block in data.get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                txt = "".join(c.get("c", "") for c in span.get("chars", [])).strip()
+                if not txt:
+                    continue
+                sz = round(span.get("size", 0))
+                if sz >= _HEADING_SIZE_MIN:
+                    continue
+                size_chars[sz] = size_chars.get(sz, 0) + len(txt)
+    if not size_chars:
+        return 0
+    return max(size_chars.items(), key=lambda item: item[1])[0]
 
 
 def _find_superscript_footer_y(page, clip: fitz.Rect) -> float | None:
     """Return the y of the topmost superscript digit in the bottom half.
 
-    Uses a strict size threshold (< ``_SUPERSCRIPT_MAX_PT``, i.e. ≤ 9 pt
-    after rounding) so that 10 pt digits inside table cells are not
-    mistaken for footnote indicators.
+    Uses a ratio of the page's dominant body font size so the detection
+    adapts to any document.
 
     Returns ``None`` when no qualifying superscript is found.
     """
@@ -40,6 +66,11 @@ def _find_superscript_footer_y(page, clip: fitz.Rect) -> float | None:
     search_top = clip.y0 + page_height * 0.5  # bottom 50 %
 
     data = page.get_text("rawdict", clip=clip, flags=fitz.TEXT_PRESERVE_WHITESPACE)
+    body_size = _page_body_size(data)
+    if body_size <= 0:
+        return None
+
+    threshold = body_size * _SUPERSCRIPT_SIZE_RATIO
     best_y: float | None = None
 
     for block in data.get("blocks", []):
@@ -47,9 +78,8 @@ def _find_superscript_footer_y(page, clip: fitz.Rect) -> float | None:
             continue
         for line in block.get("lines", []):
             for span in line.get("spans", []):
-                sz = round(span.get("size", 0))
-                # Strict: < (not <=) to avoid 10pt table digits
-                if sz >= _SUPERSCRIPT_MAX_PT:
+                sz = span.get("size", 0)
+                if sz > _SUPERSCRIPT_ABS_CEIL or sz > threshold:
                     continue
                 txt = "".join(c.get("c", "") for c in span.get("chars", [])).strip()
                 if not txt or not txt.isdigit():
@@ -68,8 +98,8 @@ def detect_footer_y(page, clip: fitz.Rect) -> tuple[float | None, bool]:
 
     Strategy 1 – font-size analysis (fast, works when body/footnote sizes
     differ clearly).  Strategy 2 – superscript fallback when strategy 1
-    returns *None* but superscript digit-only spans (< 10 pt) are found in
-    the bottom half of the page.
+    returns *None* but superscript digit-only spans (significantly smaller
+    than body text) are found in the bottom half of the page.
 
     Returns ``(y, guaranteed)`` where *guaranteed* is ``True`` when the
     footer was found via the superscript fallback (which the user verified
@@ -123,7 +153,7 @@ def _detect_footer_by_fontsize(page, clip: fitz.Rect) -> float | None:
                     total += len(txt)
             if total < 2:
                 continue
-            dominant = max(size_chars, key=size_chars.get)
+            dominant = max(size_chars.items(), key=lambda item: item[1])[0]
             lines.append((y, dominant, total))
             if y < top_cutoff:
                 for sz, n in size_chars.items():
@@ -138,7 +168,7 @@ def _detect_footer_by_fontsize(page, clip: fitz.Rect) -> float | None:
     }
     if not body_candidates:
         return None  # page only has headings — skip
-    body_size = max(body_candidates, key=body_candidates.get)
+    body_size = max(body_candidates.items(), key=lambda item: item[1])[0]
     threshold = body_size * 0.90
 
     # --- Find transition to smaller font in the search area ---
