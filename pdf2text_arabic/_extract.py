@@ -34,6 +34,18 @@ _EMPTY_TEXT_THRESHOLD = 30
 
 _PAGE_NUMBER_RE = re.compile(r"^[\s\-–—]*\d+[\s\-–—]*$")
 
+# --- Mixed-page (image-based content region) detection ---
+# An image placement is treated as a "content block" that likely needs
+# OCR when its intersection with the clip is:
+#   * ≥ this fraction of clip area (smaller → decoration / icon, skipped)
+_MIN_IMAGE_AREA_RATIO = 0.05
+#   * AND ≤ this fraction of clip area
+#     (larger → full-page background / watermark, skipped)
+_BACKGROUND_AREA_RATIO = 0.85
+#   * AND the number of extractable chars inside its bbox is below this
+#     (above → body text overlaps the image, treat as decoration)
+_IMAGE_TEXT_CHAR_THRESHOLD = 15
+
 
 class PDFArabicError(Exception):
     """Base exception for pdf2text-arabic failures."""
@@ -56,13 +68,21 @@ class ExtractionResult:
         pages_total: Number of pages in the input PDF.
         pages_with_text: Number of pages that produced non-empty text.
         empty_pages: 1-based page numbers that produced empty text.
-        warnings: Machine-readable warning messages.
+        mixed_pages: 1-based page numbers that contain extractable text
+            AND a rasterized image block whose content is NOT in the text
+            layer (e.g. a table baked into an image). Under
+            ``on_empty='warn'`` (default), these pages contribute an empty
+            string to ``text`` so partial/missing content is not silently
+            returned. Use ``on_empty='ignore'`` to get the text layer anyway.
+        warnings: Machine-readable warning messages (``empty_page:N`` and
+            ``mixed_page:N`` entries).
     """
 
     text: str
     pages_total: int
     pages_with_text: int
     empty_pages: list[int]
+    mixed_pages: list[int]
     warnings: list[str]
 
 
@@ -154,6 +174,83 @@ def _is_empty_page(page, clip: fitz.Rect) -> bool:
     return len(meaningful) < _EMPTY_TEXT_THRESHOLD
 
 
+def _image_only_regions(page, clip: fitz.Rect) -> list[fitz.Rect]:
+    """Return clip-clamped bboxes of images that look like image-based
+    content blocks (e.g. a rasterized table or figure whose text is NOT
+    in the text layer).
+
+    An image placement is included when its clip-clamped bbox:
+      * covers between ``_MIN_IMAGE_AREA_RATIO`` and ``_BACKGROUND_AREA_RATIO``
+        of the clip area (filters decoration and full-page backgrounds), AND
+      * contains fewer than ``_IMAGE_TEXT_CHAR_THRESHOLD`` extractable chars
+        inside (no text layer overlapping the image).
+    """
+    clip_area = clip.width * clip.height
+    if clip_area <= 0:
+        return []
+    regions: list[fitz.Rect] = []
+    for img in page.get_image_info(xrefs=True):
+        bbox = fitz.Rect(img["bbox"]) & clip
+        if bbox.is_empty or bbox.width <= 0 or bbox.height <= 0:
+            continue
+        ratio = (bbox.width * bbox.height) / clip_area
+        if ratio < _MIN_IMAGE_AREA_RATIO or ratio > _BACKGROUND_AREA_RATIO:
+            continue
+        # Note: do not reuse a pre-built textpage here — PyMuPDF ignores the
+        # ``clip`` argument when a ``textpage`` is supplied, returning the
+        # full page text and defeating the sub-clip check.
+        text_inside = page.get_text("text", clip=bbox).strip()
+        if len(text_inside) < _IMAGE_TEXT_CHAR_THRESHOLD:
+            regions.append(bbox)
+    return regions
+
+
+def _has_content_images(page, clip: fitz.Rect) -> bool:
+    """Return True if *page* has at least one image-only content region."""
+    return bool(_image_only_regions(page, clip))
+
+
+def _ocr_image_regions(
+    page,
+    regions: list[fitz.Rect],
+    language: str,
+    dpi: int = 300,
+) -> list[tuple[float, str]]:
+    """OCR each image region independently and return ``(y_top, text)`` pairs.
+
+    Renders each region to a pixmap at *dpi*, runs Tesseract via PyMuPDF's
+    ``Pixmap.pdfocr_tobytes``, extracts the resulting text, and applies
+    ``clean_arabic`` to fix RTL ordering. Empty results are dropped.
+    """
+    results: list[tuple[float, str]] = []
+    mat = fitz.Matrix(dpi / 72, dpi / 72)
+    for region in regions:
+        try:
+            pix = page.get_pixmap(clip=region, matrix=mat)
+            ocr_pdf = pix.pdfocr_tobytes(compress=False, language=language)
+            ocr_doc = fitz.open("pdf", ocr_pdf)
+            raw = ocr_doc[0].get_text("text").strip()
+            ocr_doc.close()
+        except Exception as exc:
+            log.warning(
+                "Page %d: OCR failed on image region %s: %s",
+                _page_number(page),
+                tuple(round(x, 1) for x in region),
+                exc,
+            )
+            continue
+        # Drop page-number-looking lines, keep the rest; apply RTL cleanup.
+        lines = [
+            clean_arabic(ln).strip()
+            for ln in raw.splitlines()
+            if ln.strip() and not _PAGE_NUMBER_RE.match(ln)
+        ]
+        cleaned = "\n".join(ln for ln in lines if ln)
+        if cleaned:
+            results.append((region.y0, cleaned))
+    return results
+
+
 def _ocr_page(page, clip: fitz.Rect, language: str = "ara") -> str:
     """Try to OCR *page* using Tesseract via PyMuPDF.
 
@@ -218,9 +315,15 @@ def extract_page(
             page height.
         detect_footer: When *True*, automatically detect a footnote separator
             line and exclude everything below it.
-        on_empty: What to do when a page has images but no extractable text:
-            ``"ignore"`` — silently return empty string.
-            ``"warn"`` — log a warning and return empty string.
+        on_empty: What to do when a page has images whose content is NOT in
+            the text layer (fully image-only pages, OR mixed pages with a
+            rasterized table/figure alongside extractable text):
+            ``"ignore"`` — silently return the extractable text layer
+            (image content is lost without notice).
+            ``"warn"`` — log a warning AND return empty string (since the
+            page has missing content, we refuse to hand back a partial
+            result; callers can switch to ``"ignore"`` to get the text layer
+            anyway).
             ``"ocr"`` — attempt OCR via Tesseract; if that still yields
             nothing, log a warning and return empty string.
         ocr_language: Tesseract language code(s) for OCR (default ``"ara"``).
@@ -239,6 +342,23 @@ def extract_page(
         if on_empty == "warn":
             log.warning("Page %d: image-only, no extractable text", page_num)
         return ""
+
+    # --- Mixed page detection: extractable text + image-based content block ---
+    mixed_regions = _image_only_regions(page, clip)
+    if mixed_regions:
+        page_num = _page_number(page)
+        if on_empty == "warn":
+            log.warning(
+                "Page %d: contains image-based content (e.g. rasterized table) "
+                "that is NOT in the text layer — returning empty, use "
+                "on_empty='ignore' to get the text layer anyway",
+                page_num,
+            )
+            return ""
+        # ``ignore`` → mixed_regions is ignored, only the text layer is returned.
+        # ``ocr``    → OCR each region and splice into pieces after body loop.
+        if on_empty != "ocr":
+            mixed_regions = []
 
     if detect_footer:
         footer_y, guaranteed = detect_footer_y(page, clip)
@@ -294,6 +414,18 @@ def extract_page(
 
     for y_top, ttext in table_entries:
         pieces.append((y_top, ttext))
+
+    # Splice in OCR'd image-only regions (mixed-page path)
+    if mixed_regions:
+        # Re-clamp regions to the (possibly footer-trimmed) clip so we don't
+        # OCR into a region that has since been cropped out.
+        final_regions = [
+            (r & clip) for r in mixed_regions if not (r & clip).is_empty
+        ]
+        for y_top, ocr_text in _ocr_image_regions(
+            page, final_regions, language=ocr_language
+        ):
+            pieces.append((y_top, ocr_text))
 
     pieces.sort(key=lambda p: p[0])
 
@@ -367,9 +499,17 @@ def extract_pdf_result(
 
     pages: list[str] = []
     empty_pages: list[int] = []
+    mixed_pages: list[int] = []
     warnings: list[str] = []
 
     for page in doc:
+        page_no = _page_number(page)
+        # Classify the page BEFORE extraction so we can report mixed pages
+        # even when extract_page() returns "" under on_empty='warn'.
+        clip = _compute_clip(page.rect, crop_top, crop_bottom, crop_unit)
+        is_empty = _is_empty_page(page, clip)
+        is_mixed = (not is_empty) and _has_content_images(page, clip)
+
         text = extract_page(
             page,
             crop_top=crop_top,
@@ -379,10 +519,16 @@ def extract_pdf_result(
             on_empty=on_empty,
             ocr_language=ocr_language,
         )
+
+        if is_mixed:
+            mixed_pages.append(page_no)
+            warnings.append(f"mixed_page:{page_no}")
+
         if text.strip():
             pages.append(text)
-        else:
-            page_no = _page_number(page)
+        elif not is_mixed:
+            # Truly empty: either scanned page or image-only. Mixed pages
+            # that return "" under warn are tracked separately above.
             empty_pages.append(page_no)
             warnings.append(f"empty_page:{page_no}")
 
@@ -394,5 +540,6 @@ def extract_pdf_result(
         pages_total=pages_total,
         pages_with_text=len(pages),
         empty_pages=empty_pages,
+        mixed_pages=mixed_pages,
         warnings=warnings,
     )
