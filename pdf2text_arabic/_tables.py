@@ -88,13 +88,19 @@ def _extract_cell_text(page, cell_bbox, extract_ref: str = "", rawdict=None) -> 
     return result
 
 
-def extract_tables(page, clip=None) -> tuple[list[tuple[float, str]], list[tuple]]:
+def extract_tables(page, clip=None, strategy=None) -> tuple[list[tuple[float, str]], list[tuple]]:
     """Extract tables from a page using PyMuPDF's find_tables().
 
     Returns (table_entries, bboxes) where table_entries is a list of
     (y_top, table_text) tuples for positioning.
     """
-    tabs = page.find_tables(clip=clip)
+    kwargs = {}
+    if clip is not None:
+        kwargs["clip"] = clip
+    if strategy is not None:
+        kwargs["strategy"] = strategy
+
+    tabs = page.find_tables(**kwargs)
     if not tabs.tables:
         return [], []
 

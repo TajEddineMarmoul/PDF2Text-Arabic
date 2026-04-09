@@ -189,7 +189,7 @@ def _image_only_regions(page, clip: fitz.Rect) -> list[fitz.Rect]:
     if clip_area <= 0:
         return []
     regions: list[fitz.Rect] = []
-    for img in page.get_image_info(xrefs=True):
+    for img in page.get_image_info():
         bbox = fitz.Rect(img["bbox"]) & clip
         if bbox.is_empty or bbox.width <= 0 or bbox.height <= 0:
             continue
@@ -215,12 +215,14 @@ def _ocr_image_regions(
     regions: list[fitz.Rect],
     language: str,
     dpi: int = 300,
+    table_strategy: str | None = None,
 ) -> list[tuple[float, str]]:
     """OCR each image region independently and return ``(y_top, text)`` pairs.
 
     Renders each region to a pixmap at *dpi*, runs Tesseract via PyMuPDF's
-    ``Pixmap.pdfocr_tobytes``, extracts the resulting text, and applies
-    ``clean_arabic`` to fix RTL ordering. Empty results are dropped.
+    ``Pixmap.pdfocr_tobytes``, and uses ``extract_page`` on the resulting
+    PDF to properly handle RTL character ordering and table extraction.
+    Empty results are dropped.
     """
     results: list[tuple[float, str]] = []
     mat = fitz.Matrix(dpi / 72, dpi / 72)
@@ -229,7 +231,15 @@ def _ocr_image_regions(
             pix = page.get_pixmap(clip=region, matrix=mat)
             ocr_pdf = pix.pdfocr_tobytes(compress=False, language=language)
             ocr_doc = fitz.open("pdf", ocr_pdf)
-            raw = ocr_doc[0].get_text("text").strip()
+            # Use extract_page to properly reconstruct RTL text from the OCR'd PDF.
+            # We don't detect footers on isolated image regions, and we ignore emptiness
+            # (since we just created this doc via OCR).
+            raw = extract_page(
+                ocr_doc[0],
+                detect_footer=False,
+                on_empty="ignore",
+                table_strategy=table_strategy,
+            )
             ocr_doc.close()
         except Exception as exc:
             log.warning(
@@ -239,27 +249,35 @@ def _ocr_image_regions(
                 exc,
             )
             continue
-        # Drop page-number-looking lines, keep the rest; apply RTL cleanup.
-        lines = [
-            clean_arabic(ln).strip()
-            for ln in raw.splitlines()
-            if ln.strip() and not _PAGE_NUMBER_RE.match(ln)
-        ]
-        cleaned = "\n".join(ln for ln in lines if ln)
-        if cleaned:
-            results.append((region.y0, cleaned))
+        
+        if raw:
+            results.append((region.y0, raw))
     return results
 
 
-def _ocr_page(page, clip: fitz.Rect, language: str = "ara") -> str:
+def _ocr_page(
+    page, clip: fitz.Rect, language: str = "ara", table_strategy: str | None = None
+) -> str:
     """Try to OCR *page* using Tesseract via PyMuPDF.
 
     Returns extracted text, or empty string if Tesseract is not available
     or OCR yields nothing.
     """
     try:
-        tp = page.get_textpage_ocr(flags=0, language=language, full=True)
-        text = page.get_text("text", clip=clip, textpage=tp).strip()
+        # Create a new PDF of the OCR'd page instead of extracting text
+        # so we can reuse extract_page's RTL and table logic.
+        pix = page.get_pixmap(clip=clip, matrix=fitz.Matrix(300 / 72, 300 / 72))
+        ocr_pdf = pix.pdfocr_tobytes(compress=False, language=language)
+        ocr_doc = fitz.open("pdf", ocr_pdf)
+        
+        text = extract_page(
+            ocr_doc[0],
+            detect_footer=False,
+            on_empty="ignore",
+            table_strategy=table_strategy,
+        )
+        ocr_doc.close()
+        
         # Strip page-number lines
         lines = [ln for ln in text.splitlines() if not _PAGE_NUMBER_RE.match(ln)]
         return "\n".join(lines).strip()
@@ -304,6 +322,7 @@ def extract_page(
     detect_footer: bool = True,
     on_empty: Literal["ignore", "warn", "ocr"] = "warn",
     ocr_language: str = "ara",
+    table_strategy: str | None = None,
 ) -> str:
     """Extract corrected Arabic text from one PyMuPDF page.
 
@@ -327,6 +346,7 @@ def extract_page(
             ``"ocr"`` — attempt OCR via Tesseract; if that still yields
             nothing, log a warning and return empty string.
         ocr_language: Tesseract language code(s) for OCR (default ``"ara"``).
+        table_strategy: Strategy for PyMuPDF table detection (e.g. 'lines', 'lines_strict', 'text').
     """
     clip = _compute_clip(page.rect, crop_top, crop_bottom, crop_unit)
 
@@ -334,7 +354,7 @@ def extract_page(
     if _is_empty_page(page, clip):
         page_num = _page_number(page)
         if on_empty == "ocr":
-            ocr_text = _ocr_page(page, clip, language=ocr_language)
+            ocr_text = _ocr_page(page, clip, language=ocr_language, table_strategy=table_strategy)
             if ocr_text:
                 return ocr_text
             log.warning("Page %d: image-only, OCR returned no text", page_num)
@@ -368,7 +388,10 @@ def extract_page(
                 # Safety: table borders can look like footer separators.
                 # Skip when superscript-guaranteed (footnote zones can be
                 # falsely matched as "tables" by find_tables).
-                tabs = page.find_tables(clip=clip)
+                kwargs = {"clip": clip}
+                if table_strategy is not None:
+                    kwargs["strategy"] = table_strategy
+                tabs = page.find_tables(**kwargs)
                 for table in tabs.tables:
                     tx0, ty0, tx1, ty1 = table.bbox
                     if ty0 <= footer_y <= ty1:
@@ -377,7 +400,7 @@ def extract_page(
             if apply_crop:
                 clip = fitz.Rect(clip.x0, clip.y0, clip.x1, footer_y - 1)
 
-    table_entries, t_bboxes = extract_tables(page, clip=clip)
+    table_entries, t_bboxes = extract_tables(page, clip=clip, strategy=table_strategy)
 
     rawdict = page.get_text("rawdict", clip=clip)
     body_size = _body_font_size(rawdict, t_bboxes)
@@ -423,7 +446,7 @@ def extract_page(
             (r & clip) for r in mixed_regions if not (r & clip).is_empty
         ]
         for y_top, ocr_text in _ocr_image_regions(
-            page, final_regions, language=ocr_language
+            page, final_regions, language=ocr_language, table_strategy=table_strategy
         ):
             pieces.append((y_top, ocr_text))
 
@@ -441,6 +464,7 @@ def extract_pdf(
     detect_footer: bool = True,
     on_empty: Literal["ignore", "warn", "ocr"] = "warn",
     ocr_language: str = "ara",
+    table_strategy: str | None = None,
 ) -> str:
     """Extract Arabic text from a PDF file.
 
@@ -453,6 +477,7 @@ def extract_pdf(
         on_empty: How to handle image-only pages (``"ignore"``, ``"warn"``,
             or ``"ocr"``).
         ocr_language: Tesseract language code(s) for OCR (default ``"ara"``).
+        table_strategy: Strategy for PyMuPDF table detection.
 
     Returns:
         The full extracted text with pages separated by double newlines.
@@ -465,6 +490,7 @@ def extract_pdf(
         detect_footer=detect_footer,
         on_empty=on_empty,
         ocr_language=ocr_language,
+        table_strategy=table_strategy,
     ).text
 
 
@@ -477,6 +503,7 @@ def extract_pdf_result(
     detect_footer: bool = True,
     on_empty: Literal["ignore", "warn", "ocr"] = "warn",
     ocr_language: str = "ara",
+    table_strategy: str | None = None,
 ) -> ExtractionResult:
     """Extract Arabic text and return structured metadata.
 
@@ -518,6 +545,7 @@ def extract_pdf_result(
             detect_footer=detect_footer,
             on_empty=on_empty,
             ocr_language=ocr_language,
+            table_strategy=table_strategy,
         )
 
         if is_mixed:

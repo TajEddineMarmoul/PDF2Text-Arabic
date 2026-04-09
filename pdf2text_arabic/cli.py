@@ -69,6 +69,12 @@ def main():
         default="ara",
         help="Tesseract language code(s) for OCR (default: ara).",
     )
+    parser.add_argument(
+        "--table-strategy",
+        choices=["lines", "lines_strict", "text"],
+        default=None,
+        help="PyMuPDF table detection strategy. Use 'text' for tables without borders.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -106,6 +112,7 @@ def main():
                 detect_footer=not args.no_footer,
                 on_empty=args.on_empty,
                 ocr_language=args.ocr_language,
+                table_strategy=args.table_strategy,
             )
             out_name = os.path.splitext(filename)[0] + ".txt"
             out_path = os.path.join(args.output_dir, out_name)
