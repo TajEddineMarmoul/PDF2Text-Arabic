@@ -127,13 +127,18 @@ Structured output for AI/automation:
 
 ### Table extraction
 
-Tables are automatically detected via PyMuPDF's `find_tables()`, extracted with proper Arabic cell ordering, and formatted as pipe-delimited text. Merged cells are filled down so every row is self-contained:
+Tables are automatically detected via PyMuPDF's `find_tables()`, extracted with proper Arabic cell ordering, and formatted as row-wise key:value blocks optimized for Vector Databases / RAG pipelines. Merged cells are filled down so every block is self-contained:
 
-```
-الجهات | عدد المقاعد | مقر الدائرة الانتخابية
-طنجة – تطوان – الحسيمة | 2 | ولاية جهة فاس - مكناس
-الشرق | 2 | ولاية جهة فاس - مكناس
-فاس - مكناس | 2 | ولاية جهة فاس - مكناس
+```text
+نوع المحتوى: جدول
+الجهات: طنجة – تطوان – الحسيمة
+عدد المقاعد: 2
+مقر الدائرة الانتخابية: ولاية جهة فاس - مكناس
+
+نوع المحتوى: جدول
+الجهات: الشرق
+عدد المقاعد: 2
+مقر الدائرة الانتخابية: ولاية جهة فاس - مكناس
 ```
 
 ### Footer detection

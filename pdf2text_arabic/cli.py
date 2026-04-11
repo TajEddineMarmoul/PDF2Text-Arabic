@@ -60,14 +60,9 @@ def main():
             "How to handle image-only pages: "
             "'ignore' (skip silently), "
             "'warn' (log + skip), "
-            "'ocr' (try Tesseract OCR, warn if still empty). "
+            "'ocr' (use Marker OCR, warn if still empty). "
             "Default: warn."
         ),
-    )
-    parser.add_argument(
-        "--ocr-language",
-        default="ara",
-        help="Tesseract language code(s) for OCR (default: ara).",
     )
     parser.add_argument(
         "--table-strategy",
@@ -111,7 +106,6 @@ def main():
                 crop_unit=args.crop_unit,
                 detect_footer=not args.no_footer,
                 on_empty=args.on_empty,
-                ocr_language=args.ocr_language,
                 table_strategy=args.table_strategy,
             )
             out_name = os.path.splitext(filename)[0] + ".txt"

@@ -6,7 +6,10 @@ rows; complex tables (>6 cols) are split into sub-tables of 3 columns.
 Merged cells are filled down to make each row self-contained.
 """
 
+from __future__ import annotations
+
 import re
+from typing import Literal
 
 import fitz
 
@@ -88,7 +91,11 @@ def _extract_cell_text(page, cell_bbox, extract_ref: str = "", rawdict=None) -> 
     return result
 
 
-def extract_tables(page, clip=None, strategy=None) -> tuple[list[tuple[float, str]], list[tuple]]:
+def extract_tables(
+    page,
+    clip=None,
+    strategy=None,
+) -> tuple[list[tuple[float, str]], list[tuple]]:
     """Extract tables from a page using PyMuPDF's find_tables().
 
     Returns (table_entries, bboxes) where table_entries is a list of
@@ -144,80 +151,45 @@ def extract_tables(page, clip=None, strategy=None) -> tuple[list[tuple[float, st
                 if merged[ri][ci] and ci < len(grid[ri - 1]) and grid[ri - 1][ci]:
                     grid[ri][ci] = grid[ri - 1][ci]
 
-        ncols = table.col_count
-
-        if ncols <= 6:
-            _format_simple_table(grid, table.bbox[1], results)
-        else:
-            _format_complex_table(grid, merged, ncols, table.bbox[1], results)
+        _format_rag_table(grid, table.bbox[1], results)
 
     return results, bboxes
 
 
-def _format_simple_table(
+
+def _format_rag_table(
     grid: list[list[str]],
     y_top: float,
     results: list[tuple[float, str]],
 ) -> None:
-    """Render a simple table (≤6 cols) as pipe-separated rows."""
-    lines: list[str] = []
-    for row in grid:
-        line = " | ".join(c if c else "" for c in row)
-        lines.append(line)
-    results.append((y_top, "\n".join(lines)))
+    """Render a table as row-wise key: value blocks for RAG ingestion.
 
+    The first row is treated as headers.  Each subsequent row becomes a
+    self-contained block like::
 
-def _format_complex_table(
-    grid: list[list[str]],
-    merged: list[list[bool]],
-    ncols: int,
-    y_top: float,
-    results: list[tuple[float, str]],
-) -> None:
-    """Split a complex table (>6 cols) into 3-column sub-tables."""
-    group_size = 3
-    n_groups = ncols // group_size
+        نوع المحتوى: جدول
+        الرقم الترتيبي: 07
+        الجنحة: سياقة مركبة ...
+        النقط الواجب خصمها: 6
+    """
+    if not grid:
+        return
 
-    for g in range(n_groups):
-        start_col = g * group_size
-        end_col = start_col + group_size
+    headers = grid[0]
+    blocks: list[str] = []
 
-        group_header = ""
-        if len(grid) > 1:
-            for ci in range(start_col, min(end_col, len(grid[1]))):
-                if grid[1][ci]:
-                    group_header = grid[1][ci]
-                    break
+    for row in grid[1:]:
+        # Skip entirely empty rows
+        if not any(c.strip() for c in row):
+            continue
+        lines = ["نوع المحتوى: جدول"]
+        for i, cell in enumerate(row):
+            if not cell.strip():
+                continue
+            header = headers[i] if i < len(headers) and headers[i].strip() else f"عمود {i + 1}"
+            lines.append(f"{header}: {cell.strip()}")
+        if len(lines) > 1:  # has at least one data field
+            blocks.append("\n".join(lines))
 
-        lines = []
-        if group_header:
-            lines.append(group_header)
-
-        if len(grid) > 2:
-            header_cells = []
-            for ci in range(start_col, min(end_col, ncols)):
-                if ci < len(grid[2]):
-                    header_cells.append(grid[2][ci] if grid[2][ci] else "")
-                else:
-                    header_cells.append("")
-            lines.append(" | ".join(header_cells))
-
-        for ri in range(3, len(grid)):
-            row_cells = []
-            all_empty = True
-            all_merged = True
-            for ci in range(start_col, min(end_col, ncols)):
-                if ci < len(grid[ri]):
-                    val = grid[ri][ci]
-                    if val:
-                        all_empty = False
-                    if ci < len(merged[ri]) and not merged[ri][ci]:
-                        all_merged = False
-                    row_cells.append(val)
-                else:
-                    row_cells.append("")
-            if not all_empty and not all_merged:
-                lines.append(" | ".join(row_cells))
-
-        if len(lines) > 1:
-            results.append((y_top, "\n".join(lines)))
+    if blocks:
+        results.append((y_top, "\n\n".join(blocks)))

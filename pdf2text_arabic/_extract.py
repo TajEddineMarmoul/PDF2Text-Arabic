@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import logging
 from pathlib import Path
 import re
+import tempfile
 from typing import Literal
 
 import fitz
@@ -56,7 +57,7 @@ class InvalidPDFPathError(PDFArabicError):
 
 
 class OCRUnavailableError(PDFArabicError):
-    """Raised when OCR is requested but unavailable in the runtime."""
+    """Raised when OCR is requested but Marker is not installed."""
 
 
 @dataclass(slots=True)
@@ -210,80 +211,153 @@ def _has_content_images(page, clip: fitz.Rect) -> bool:
     return bool(_image_only_regions(page, clip))
 
 
-def _ocr_image_regions(
+# ---------------------------------------------------------------------------
+# Marker OCR
+# ---------------------------------------------------------------------------
+
+def _marker_available() -> bool:
+    """Return True if Marker is importable."""
+    try:
+        import marker.scripts.convert_single  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _marker_ocr_page(
     page,
     regions: list[fitz.Rect],
-    language: str,
-    dpi: int = 300,
-    table_strategy: str | None = None,
 ) -> list[tuple[float, str]]:
-    """OCR each image region independently and return ``(y_top, text)`` pairs.
+    """Run Marker on specific image regions of a page and return cleaned text.
 
-    Renders each region to a pixmap at *dpi*, runs Tesseract via PyMuPDF's
-    ``Pixmap.pdfocr_tobytes``, and uses ``extract_page`` on the resulting
-    PDF to properly handle RTL character ordering and table extraction.
-    Empty results are dropped.
+    Converts Markdown tables into RAG-friendly row-wise key: value blocks.
     """
+    import torch
+    import marker.scripts.convert_single as convert_single
+
     results: list[tuple[float, str]] = []
-    mat = fitz.Matrix(dpi / 72, dpi / 72)
-    for region in regions:
-        try:
-            pix = page.get_pixmap(clip=region, matrix=mat)
-            ocr_pdf = pix.pdfocr_tobytes(compress=False, language=language)
-            ocr_doc = fitz.open("pdf", ocr_pdf)
-            # Use extract_page to properly reconstruct RTL text from the OCR'd PDF.
-            # We don't detect footers on isolated image regions, and we ignore emptiness
-            # (since we just created this doc via OCR).
-            raw = extract_page(
-                ocr_doc[0],
-                detect_footer=False,
-                on_empty="ignore",
-                table_strategy=table_strategy,
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        for idx, region in enumerate(regions):
+            # Create a temporary PDF containing ONLY this cropped image region
+            # This forces Marker to only look at the table/image, not the whole page text.
+            tmp_pdf_path = Path(tmp_dir) / f"region_{idx}.pdf"
+            pix = page.get_pixmap(clip=region, dpi=300)
+            tmp_doc = fitz.open()
+            tmp_page = tmp_doc.new_page(width=region.width, height=region.height)
+            tmp_page.insert_image(tmp_page.rect, pixmap=pix)
+            tmp_doc.save(str(tmp_pdf_path))
+            tmp_doc.close()
+
+            out_dir = Path(tmp_dir) / f"out_{idx}"
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            convert_single.convert_single_cli.main(
+                args=[
+                    str(tmp_pdf_path),
+                    "--output_format",
+                    "markdown",
+                    "--output_dir",
+                    str(out_dir),
+                    "--disable_image_extraction",
+                    "--disable_multiprocessing",
+                    "--disable_tqdm",
+                ],
+                standalone_mode=False,
             )
-            ocr_doc.close()
-        except Exception as exc:
-            log.warning(
-                "Page %d: OCR failed on image region %s: %s",
-                _page_number(page),
-                tuple(round(x, 1) for x in region),
-                exc,
-            )
-            continue
-        
-        if raw:
-            results.append((region.y0, raw))
+
+            pdf_stem = tmp_pdf_path.stem
+            md_path = out_dir / pdf_stem / f"{pdf_stem}.md"
+            if not md_path.exists():
+                continue
+            
+            markdown = md_path.read_text(encoding="utf-8")
+            text = _marker_md_to_rag(markdown)
+            
+            if text.strip():
+                results.append((region.y0, text.strip()))
+
     return results
 
 
-def _ocr_page(
-    page, clip: fitz.Rect, language: str = "ara", table_strategy: str | None = None
-) -> str:
-    """Try to OCR *page* using Tesseract via PyMuPDF.
+def _marker_md_to_rag(markdown: str) -> str:
+    """Convert Marker markdown to row-wise key: value blocks for RAG."""
+    lines: list[str] = []
+    in_table = False
+    headers: list[str] = []
+    current_row: list[str] | None = None
 
-    Returns extracted text, or empty string if Tesseract is not available
-    or OCR yields nothing.
+    def _flush_row():
+        if current_row is None:
+            return
+        text_cells = [c for c in current_row if c.strip()
+                      and not re.fullmatch(r"[\d\-\.\,\s\*]+|.*Qapar.*", c.strip())]
+        if text_cells:
+            lines.append("نوع المحتوى: جدول")
+            for i, cell in enumerate(current_row):
+                if i < len(headers) and cell.strip() and not re.fullmatch(r"\*+|-", cell.strip()):
+                    lines.append(f"{headers[i]}: {cell.strip()}")
+            lines.append("")
+
+    for raw_line in markdown.splitlines():
+        line = raw_line.strip()
+
+        if line.startswith("|") and line.endswith("|"):
+            cells = [cell.strip() for cell in line.split("|")[1:-1]]
+            # Separator row?
+            if cells and all(re.fullmatch(r"[:\-\s]+", cell or "-") for cell in cells):
+                continue
+            plain_cells = [" ".join(cell.replace("<br>", "\n").split()) for cell in cells]
+
+            if not in_table:
+                in_table = True
+                headers = plain_cells
+                current_row = None
+            else:
+                # Continuation row (both first and last columns empty)
+                if current_row and not plain_cells[0] and not plain_cells[-1]:
+                    for i, cell in enumerate(plain_cells):
+                        if cell:
+                            current_row[i] += " " + cell
+                else:
+                    _flush_row()
+                    current_row = plain_cells
+            continue
+
+        # Not a table row
+        if in_table:
+            _flush_row()
+            current_row = None
+            in_table = False
+
+        if not line:
+            lines.append("")
+        else:
+            line = re.sub(r"^#+\s*", "", line)
+            line = line.replace("**", "")
+            lines.append(line)
+
+    if in_table:
+        _flush_row()
+
+    text = "\n".join(lines)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _ocr_page(
+    page,
+    regions: list[fitz.Rect],
+) -> list[tuple[float, str]]:
+    """OCR a page's image regions using Marker.
+
+    Returns extracted text tuples, or empty list if Marker fails.
     """
     try:
-        # Create a new PDF of the OCR'd page instead of extracting text
-        # so we can reuse extract_page's RTL and table logic.
-        pix = page.get_pixmap(clip=clip, matrix=fitz.Matrix(300 / 72, 300 / 72))
-        ocr_pdf = pix.pdfocr_tobytes(compress=False, language=language)
-        ocr_doc = fitz.open("pdf", ocr_pdf)
-        
-        text = extract_page(
-            ocr_doc[0],
-            detect_footer=False,
-            on_empty="ignore",
-            table_strategy=table_strategy,
-        )
-        ocr_doc.close()
-        
-        # Strip page-number lines
-        lines = [ln for ln in text.splitlines() if not _PAGE_NUMBER_RE.match(ln)]
-        return "\n".join(lines).strip()
+        return _marker_ocr_page(page, regions)
     except Exception as exc:
-        log.warning("OCR failed on page %d: %s", _page_number(page), exc)
-        return ""
+        log.warning("Page %d: Marker OCR failed: %s", _page_number(page), exc)
+        return []
 
 
 def _page_number(page) -> int:
@@ -303,7 +377,7 @@ def get_capabilities() -> dict[str, bool | str]:
     return {
         "tables": True,
         "footer_detection": True,
-        "ocr": hasattr(fitz.Page, "get_textpage_ocr"),
+        "ocr": _marker_available(),
         "recommended_import": "from pdf2text_arabic import extract_pdf, extract_pdf_result",
     }
 
@@ -321,7 +395,6 @@ def extract_page(
     crop_unit: Literal["px", "pct"] = "px",
     detect_footer: bool = True,
     on_empty: Literal["ignore", "warn", "ocr"] = "warn",
-    ocr_language: str = "ara",
     table_strategy: str | None = None,
 ) -> str:
     """Extract corrected Arabic text from one PyMuPDF page.
@@ -343,9 +416,8 @@ def extract_page(
             page has missing content, we refuse to hand back a partial
             result; callers can switch to ``"ignore"`` to get the text layer
             anyway).
-            ``"ocr"`` — attempt OCR via Tesseract; if that still yields
+            ``"ocr"`` — attempt OCR via Marker; if that still yields
             nothing, log a warning and return empty string.
-        ocr_language: Tesseract language code(s) for OCR (default ``"ara"``).
         table_strategy: Strategy for PyMuPDF table detection (e.g. 'lines', 'lines_strict', 'text').
     """
     clip = _compute_clip(page.rect, crop_top, crop_bottom, crop_unit)
@@ -354,9 +426,10 @@ def extract_page(
     if _is_empty_page(page, clip):
         page_num = _page_number(page)
         if on_empty == "ocr":
-            ocr_text = _ocr_page(page, clip, language=ocr_language, table_strategy=table_strategy)
-            if ocr_text:
-                return ocr_text
+            # If the page is empty, treat the whole clip as the region
+            ocr_results = _ocr_page(page, [clip])
+            if ocr_results:
+                return "\n\n".join(text for _, text in ocr_results)
             log.warning("Page %d: image-only, OCR returned no text", page_num)
             return ""
         if on_empty == "warn":
@@ -375,8 +448,6 @@ def extract_page(
                 page_num,
             )
             return ""
-        # ``ignore`` → mixed_regions is ignored, only the text layer is returned.
-        # ``ocr``    → OCR each region and splice into pieces after body loop.
         if on_empty != "ocr":
             mixed_regions = []
 
@@ -385,9 +456,6 @@ def extract_page(
         if footer_y is not None:
             apply_crop = True
             if not guaranteed:
-                # Safety: table borders can look like footer separators.
-                # Skip when superscript-guaranteed (footnote zones can be
-                # falsely matched as "tables" by find_tables).
                 kwargs = {"clip": clip}
                 if table_strategy is not None:
                     kwargs["strategy"] = table_strategy
@@ -439,15 +507,14 @@ def extract_page(
         pieces.append((y_top, ttext))
 
     # Splice in OCR'd image-only regions (mixed-page path)
-    if mixed_regions:
+    if mixed_regions and on_empty == "ocr":
         # Re-clamp regions to the (possibly footer-trimmed) clip so we don't
         # OCR into a region that has since been cropped out.
         final_regions = [
             (r & clip) for r in mixed_regions if not (r & clip).is_empty
         ]
-        for y_top, ocr_text in _ocr_image_regions(
-            page, final_regions, language=ocr_language, table_strategy=table_strategy
-        ):
+        ocr_results = _ocr_page(page, final_regions)
+        for y_top, ocr_text in ocr_results:
             pieces.append((y_top, ocr_text))
 
     pieces.sort(key=lambda p: p[0])
@@ -463,7 +530,6 @@ def extract_pdf(
     crop_unit: Literal["px", "pct"] = "px",
     detect_footer: bool = True,
     on_empty: Literal["ignore", "warn", "ocr"] = "warn",
-    ocr_language: str = "ara",
     table_strategy: str | None = None,
 ) -> str:
     """Extract Arabic text from a PDF file.
@@ -476,7 +542,6 @@ def extract_pdf(
         detect_footer: Auto-detect footnote separator lines and crop below.
         on_empty: How to handle image-only pages (``"ignore"``, ``"warn"``,
             or ``"ocr"``).
-        ocr_language: Tesseract language code(s) for OCR (default ``"ara"``).
         table_strategy: Strategy for PyMuPDF table detection.
 
     Returns:
@@ -489,7 +554,6 @@ def extract_pdf(
         crop_unit=crop_unit,
         detect_footer=detect_footer,
         on_empty=on_empty,
-        ocr_language=ocr_language,
         table_strategy=table_strategy,
     ).text
 
@@ -502,7 +566,6 @@ def extract_pdf_result(
     crop_unit: Literal["px", "pct"] = "px",
     detect_footer: bool = True,
     on_empty: Literal["ignore", "warn", "ocr"] = "warn",
-    ocr_language: str = "ara",
     table_strategy: str | None = None,
 ) -> ExtractionResult:
     """Extract Arabic text and return structured metadata.
@@ -514,9 +577,10 @@ def extract_pdf_result(
     if not path.exists() or not path.is_file():
         raise InvalidPDFPathError(f"PDF path not found: {pdf_path}")
 
-    if on_empty == "ocr" and not hasattr(fitz.Page, "get_textpage_ocr"):
+    if on_empty == "ocr" and not _marker_available():
         raise OCRUnavailableError(
-            "OCR requested (on_empty='ocr') but runtime OCR support is unavailable"
+            "OCR requested (on_empty='ocr') but Marker is not installed. "
+            "Install with: pip install marker-pdf"
         )
 
     try:
@@ -531,8 +595,6 @@ def extract_pdf_result(
 
     for page in doc:
         page_no = _page_number(page)
-        # Classify the page BEFORE extraction so we can report mixed pages
-        # even when extract_page() returns "" under on_empty='warn'.
         clip = _compute_clip(page.rect, crop_top, crop_bottom, crop_unit)
         is_empty = _is_empty_page(page, clip)
         is_mixed = (not is_empty) and _has_content_images(page, clip)
@@ -544,7 +606,6 @@ def extract_pdf_result(
             crop_unit=crop_unit,
             detect_footer=detect_footer,
             on_empty=on_empty,
-            ocr_language=ocr_language,
             table_strategy=table_strategy,
         )
 
@@ -555,8 +616,6 @@ def extract_pdf_result(
         if text.strip():
             pages.append(text)
         elif not is_mixed:
-            # Truly empty: either scanned page or image-only. Mixed pages
-            # that return "" under warn are tracked separately above.
             empty_pages.append(page_no)
             warnings.append(f"empty_page:{page_no}")
 
