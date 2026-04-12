@@ -20,19 +20,18 @@ from html.parser import HTMLParser
 
 
 class TableParser(HTMLParser):
-    """Parses HTML tables into a nested list grid."""
     def __init__(self):
         super().__init__()
-        self.tables: list[list[list[str]]] = []
-        self.current_table: list[list[str]] = []
-        self.current_row: list[str] = []
+        self.tables = []
+        self.current_table = []
+        self.current_row = []
         self.current_cell = ""
         self.in_td = False
 
     def handle_starttag(self, tag, attrs):
         if tag == "table":
             self.current_table = []
-        elif tag in ("tr", "th"):
+        elif tag == "tr":
             self.current_row = []
         elif tag == "td":
             self.in_td = True
@@ -42,7 +41,7 @@ class TableParser(HTMLParser):
         if tag == "td":
             self.in_td = False
             self.current_row.append(self.current_cell.strip())
-        elif tag in ("tr", "th"):
+        elif tag == "tr":
             if any(self.current_row):
                 self.current_table.append(self.current_row)
         elif tag == "table":
@@ -54,10 +53,7 @@ class TableParser(HTMLParser):
 
 
 def html_to_rag_text(html_input: str) -> str:
-    """Converts raw HTML table strings into RAG-friendly key:value blocks.
-
-    This uses the same logic as _format_rag_table but operates on raw HTML.
-    """
+    """Converts HTML tables to RAG blocks with smart row merging."""
     parser = TableParser()
     parser.feed(html_input)
 
@@ -69,13 +65,38 @@ def html_to_rag_text(html_input: str) -> str:
             break
 
         grid = parser.tables[i]
-        results: list[tuple[float, str]] = []
-        # We use a dummy y_top since we are replacing in-place
-        _format_rag_table(grid, 0.0, results)
+        if not grid or len(grid) < 2:
+            continue
 
-        if results:
-            _, rag_content = results[0]
-            final_text = final_text.replace(table_html, rag_content)
+        headers = grid[0]
+        # Merging logic: group rows by ID
+        merged_rows = []
+        for row in grid[1:]:
+            if all(not c or c == "..." for c in row):
+                continue
+
+            # If ID (col 0) is empty, merge with previous entry
+            if not row[0].strip() and merged_rows:
+                prev = merged_rows[-1]
+                for j in range(1, min(len(row), len(prev))):
+                    if row[j].strip():
+                        prev[j] = (prev[j] + " " + row[j].strip()).strip()
+            else:
+                merged_rows.append([c.strip() for c in row])
+
+        blocks = []
+        for row in merged_rows:
+            block = ["نوع المحتوى: جدول"]
+            for j, cell in enumerate(row):
+                if not cell or cell == "...":
+                    continue
+                header = headers[j] if j < len(headers) else f"Column {j+1}"
+                block.append(f"{header}: {cell}")
+            if len(block) > 1:
+                blocks.append("\n".join(block))
+
+        rag_replacement = "\n\n".join(blocks)
+        final_text = final_text.replace(table_html, rag_replacement)
 
     return final_text
 

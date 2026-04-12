@@ -254,11 +254,6 @@ def clean_deepseek_output(text: str) -> str:
     text = re.sub(r"<\|det\|>.*?<\|/det\|>", "", text)
     text = re.sub(r"<\|.*?\|>", "", text)
 
-    # 2. Remove OCR-generated "tooltips" (superscripts)
-    # Common pattern: a word followed by a small number like 'word1' or 'word 1'
-    # and nothing else in that line, or at the end of a sentence.
-    text = re.sub(r"(?<=[\u0600-\u06FF])\s*\d+(?=\s|$|\.)", "", text)
-
     return text.strip()
 
 
@@ -288,7 +283,7 @@ def _deepseek_ocr_page(
             # Added "Ignore headers/footers" to the instruction
             response = ollama.generate(
                 model="deepseek-ocr:latest",
-                prompt="<|grounding|>Extract the document text and tables. Ignore headers, footers, and page numbers.",
+                prompt="<|grounding|>Convert the document to text.",
                 images=[img_bytes],
                 stream=False,
                 options={"temperature": 0, "num_predict": 2048, "repeat_penalty": 1.5},
@@ -322,8 +317,9 @@ def _ocr_page(
     Returns extracted text tuples, or empty list if OCR fails.
     """
     if not _ollama_available():
-        log.warning("OCR requested but 'ollama' library not installed.")
-        return []
+        raise RuntimeError(
+            "OCR requested but 'ollama' library is not installed or accessible. Please install it and ensure Ollama is running."
+        )
 
     return _deepseek_ocr_page(page, regions)
 
