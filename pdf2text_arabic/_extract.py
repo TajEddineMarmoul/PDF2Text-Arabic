@@ -22,7 +22,7 @@ log = logging.getLogger(__name__)
 # Superscript detection: a digit-only span is treated as a footnote
 # indicator when its font size is ≤ this fraction of the page's dominant
 # body font size.  E.g. 0.75 means anything ≤ 75% of body size is super.
-_SUPERSCRIPT_SIZE_RATIO = 0.75
+_SUPERSCRIPT_SIZE_RATIO = 0.85
 
 # Absolute ceiling: never strip digit spans larger than this, even if the
 # ratio check would flag them (guards against tiny-body-font edge cases).
