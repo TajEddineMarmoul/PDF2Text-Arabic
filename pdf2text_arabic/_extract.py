@@ -7,12 +7,12 @@ import logging
 from pathlib import Path
 import re
 import tempfile
-from typing import Literal
+from typing import Any, Literal
 
 import fitz
 
 from ._footer import detect_footer_y
-from ._tables import extract_tables
+from ._tables import extract_tables, html_to_rag_text
 from ._text import build_row_text, clean_arabic, merge_lines_by_y
 
 fitz.TOOLS.set_small_glyph_heights(True)
@@ -57,7 +57,7 @@ class InvalidPDFPathError(PDFArabicError):
 
 
 class OCRUnavailableError(PDFArabicError):
-    """Raised when OCR is requested but Marker is not installed."""
+    """Raised when OCR is requested but 'ollama' library is not installed."""
 
 
 @dataclass(slots=True)
@@ -176,33 +176,54 @@ def _is_empty_page(page, clip: fitz.Rect) -> bool:
 
 
 def _image_only_regions(page, clip: fitz.Rect) -> list[fitz.Rect]:
-    """Return clip-clamped bboxes of images that look like image-based
-    content blocks (e.g. a rasterized table or figure whose text is NOT
-    in the text layer).
+    """Return surgical bboxes of regions that likely need OCR.
 
-    An image placement is included when its clip-clamped bbox:
-      * covers between ``_MIN_IMAGE_AREA_RATIO`` and ``_BACKGROUND_AREA_RATIO``
-        of the clip area (filters decoration and full-page backgrounds), AND
-      * contains fewer than ``_IMAGE_TEXT_CHAR_THRESHOLD`` extractable chars
-        inside (no text layer overlapping the image).
+    It finds image placements within the clip, then subtracts the area
+    occupied by any selectable text to ensure we only OCR the 'unreadable'
+    parts of the page.
     """
-    clip_area = clip.width * clip.height
-    if clip_area <= 0:
-        return []
+    # 1. Find all selectable text blocks in the clip
+    text_bboxes = [
+        fitz.Rect(b[:4])
+        for b in page.get_text("blocks", clip=clip)
+        if b[6] == 0 and b[4].strip()  # type 0 is text
+    ]
+
     regions: list[fitz.Rect] = []
+
+    # 2. Inspect image objects
     for img in page.get_image_info():
-        bbox = fitz.Rect(img["bbox"]) & clip
-        if bbox.is_empty or bbox.width <= 0 or bbox.height <= 0:
+        # FORCE strict intersection with our manual crop clip
+        img_bbox = fitz.Rect(img["bbox"]) & clip
+
+        # If the intersection is tiny or empty (because it was cropped out), skip it
+        if img_bbox.is_empty or img_bbox.width < 10 or img_bbox.height < 10:
             continue
-        ratio = (bbox.width * bbox.height) / clip_area
-        if ratio < _MIN_IMAGE_AREA_RATIO or ratio > _BACKGROUND_AREA_RATIO:
+
+        # If an image has significant text on top of it, we skip the OCR
+        # path for this region to avoid double-extraction.
+        selectable_inside = page.get_text("text", clip=img_bbox).strip()
+        if len(selectable_inside) > _IMAGE_TEXT_CHAR_THRESHOLD:
             continue
-        # Note: do not reuse a pre-built textpage here — PyMuPDF ignores the
-        # ``clip`` argument when a ``textpage`` is supplied, returning the
-        # full page text and defeating the sub-clip check.
-        text_inside = page.get_text("text", clip=bbox).strip()
-        if len(text_inside) < _IMAGE_TEXT_CHAR_THRESHOLD:
-            regions.append(bbox)
+
+        # SURGICAL STEP: Shrink the image bbox to avoid selectable fragments
+        surgical_bbox = fitz.Rect(img_bbox)  # Create a fresh copy to modify
+
+        for t_bbox in text_bboxes:
+            # If a text block overlaps our candidate region, we subtract it
+            if t_bbox.intersects(surgical_bbox):
+                # If text is at the bottom, push the surgical bottom up
+                if t_bbox.y0 > surgical_bbox.y0 + (surgical_bbox.height * 0.5):
+                    surgical_bbox.y1 = min(surgical_bbox.y1, t_bbox.y0 - 1)
+                # If text is at the top, push the surgical top down
+                elif t_bbox.y1 < surgical_bbox.y0 + (surgical_bbox.height * 0.5):
+                    surgical_bbox.y0 = max(surgical_bbox.y0, t_bbox.y1 + 1)
+
+        # Final safety check: must be inside the clip and have valid size
+        final_bbox = surgical_bbox & clip
+        if not final_bbox.is_empty and final_bbox.width > 5 and final_bbox.height > 5:
+            regions.append(final_bbox)
+
     return regions
 
 
@@ -212,152 +233,99 @@ def _has_content_images(page, clip: fitz.Rect) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Marker OCR
+# DeepSeek-OCR
 # ---------------------------------------------------------------------------
 
-def _marker_available() -> bool:
-    """Return True if Marker is importable."""
+
+def _ollama_available() -> bool:
+    """Return True if ollama library is installed."""
     try:
-        import marker.scripts.convert_single  # noqa: F401
+        import ollama  # noqa: F401
+
         return True
-    except Exception:
+    except ImportError:
         return False
 
 
-def _marker_ocr_page(
+def clean_deepseek_output(text: str) -> str:
+    """Removes grounding tags, coordinate markers, and OCR artifacts."""
+    # 1. Remove visual grounding tags
+    text = re.sub(r"<\|ref\|>.*?<\|/ref\|>", "", text)
+    text = re.sub(r"<\|det\|>.*?<\|/det\|>", "", text)
+    text = re.sub(r"<\|.*?\|>", "", text)
+
+    # 2. Remove OCR-generated "tooltips" (superscripts)
+    # Common pattern: a word followed by a small number like 'word1' or 'word 1'
+    # and nothing else in that line, or at the end of a sentence.
+    text = re.sub(r"(?<=[\u0600-\u06FF])\s*\d+(?=\s|$|\.)", "", text)
+
+    return text.strip()
+
+
+def _deepseek_ocr_page(
     page,
     regions: list[fitz.Rect],
 ) -> list[tuple[float, str]]:
-    """Run Marker on specific image regions of a page and return cleaned text.
+    """Run DeepSeek-OCR via Ollama on specific image regions of a page.
 
-    Converts Markdown tables into RAG-friendly row-wise key: value blocks.
+    Uses grounding mode for high precision and converts HTML tables to RAG format.
     """
-    import torch
-    import marker.scripts.convert_single as convert_single
+    import ollama
 
     results: list[tuple[float, str]] = []
 
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        for idx, region in enumerate(regions):
-            # Create a temporary PDF containing ONLY this cropped image region
-            # This forces Marker to only look at the table/image, not the whole page text.
-            tmp_pdf_path = Path(tmp_dir) / f"region_{idx}.pdf"
-            pix = page.get_pixmap(clip=region, dpi=300)
-            tmp_doc = fitz.open()
-            tmp_page = tmp_doc.new_page(width=region.width, height=region.height)
-            tmp_page.insert_image(tmp_page.rect, pixmap=pix)
-            tmp_doc.save(str(tmp_pdf_path))
-            tmp_doc.close()
+    for idx, region in enumerate(regions):
+        # Generate an image of the region for the vision model
+        pix = page.get_pixmap(clip=region, dpi=300)
 
-            out_dir = Path(tmp_dir) / f"out_{idx}"
-            out_dir.mkdir(parents=True, exist_ok=True)
+        # Save the surgical crop for visual verification
+        debug_name = f"ocr_surgical_crop_{idx}.png"
+        pix.save(debug_name)
 
-            convert_single.convert_single_cli.main(
-                args=[
-                    str(tmp_pdf_path),
-                    "--output_format",
-                    "markdown",
-                    "--output_dir",
-                    str(out_dir),
-                    "--disable_image_extraction",
-                    "--disable_multiprocessing",
-                    "--disable_tqdm",
-                ],
-                standalone_mode=False,
+        img_bytes = pix.tobytes("png")
+
+        try:
+            # Added "Ignore headers/footers" to the instruction
+            response = ollama.generate(
+                model="deepseek-ocr:latest",
+                prompt="<|grounding|>Extract the document text and tables. Ignore headers, footers, and page numbers.",
+                images=[img_bytes],
+                stream=False,
+                options={"temperature": 0, "num_predict": 2048, "repeat_penalty": 1.5},
             )
 
-            pdf_stem = tmp_pdf_path.stem
-            md_path = out_dir / pdf_stem / f"{pdf_stem}.md"
-            if not md_path.exists():
+            raw_text = response.get("response", "")
+            if not raw_text:
                 continue
-            
-            markdown = md_path.read_text(encoding="utf-8")
-            text = _marker_md_to_rag(markdown)
-            
-            if text.strip():
-                results.append((region.y0, text.strip()))
+
+            # 1. Clean the visual grounding tags
+            cleaned_text = clean_deepseek_output(raw_text)
+
+            # 2. Convert any HTML tables found into RAG blocks
+            rag_text = html_to_rag_text(cleaned_text)
+
+            if rag_text.strip():
+                results.append((region.y0, rag_text.strip()))
+
+        except Exception as exc:
+            log.warning("Ollama OCR failed for region: %s", exc)
 
     return results
-
-
-def _marker_md_to_rag(markdown: str) -> str:
-    """Convert Marker markdown to row-wise key: value blocks for RAG."""
-    lines: list[str] = []
-    in_table = False
-    headers: list[str] = []
-    current_row: list[str] | None = None
-
-    def _flush_row():
-        if current_row is None:
-            return
-        text_cells = [c for c in current_row if c.strip()
-                      and not re.fullmatch(r"[\d\-\.\,\s\*]+|.*Qapar.*", c.strip())]
-        if text_cells:
-            lines.append("نوع المحتوى: جدول")
-            for i, cell in enumerate(current_row):
-                if i < len(headers) and cell.strip() and not re.fullmatch(r"\*+|-", cell.strip()):
-                    lines.append(f"{headers[i]}: {cell.strip()}")
-            lines.append("")
-
-    for raw_line in markdown.splitlines():
-        line = raw_line.strip()
-
-        if line.startswith("|") and line.endswith("|"):
-            cells = [cell.strip() for cell in line.split("|")[1:-1]]
-            # Separator row?
-            if cells and all(re.fullmatch(r"[:\-\s]+", cell or "-") for cell in cells):
-                continue
-            plain_cells = [" ".join(cell.replace("<br>", "\n").split()) for cell in cells]
-
-            if not in_table:
-                in_table = True
-                headers = plain_cells
-                current_row = None
-            else:
-                # Continuation row (both first and last columns empty)
-                if current_row and not plain_cells[0] and not plain_cells[-1]:
-                    for i, cell in enumerate(plain_cells):
-                        if cell:
-                            current_row[i] += " " + cell
-                else:
-                    _flush_row()
-                    current_row = plain_cells
-            continue
-
-        # Not a table row
-        if in_table:
-            _flush_row()
-            current_row = None
-            in_table = False
-
-        if not line:
-            lines.append("")
-        else:
-            line = re.sub(r"^#+\s*", "", line)
-            line = line.replace("**", "")
-            lines.append(line)
-
-    if in_table:
-        _flush_row()
-
-    text = "\n".join(lines)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
 
 
 def _ocr_page(
     page,
     regions: list[fitz.Rect],
 ) -> list[tuple[float, str]]:
-    """OCR a page's image regions using Marker.
+    """OCR a page's image regions using DeepSeek-OCR via Ollama.
 
-    Returns extracted text tuples, or empty list if Marker fails.
+    Returns extracted text tuples, or empty list if OCR fails.
     """
-    try:
-        return _marker_ocr_page(page, regions)
-    except Exception as exc:
-        log.warning("Page %d: Marker OCR failed: %s", _page_number(page), exc)
+    if not _ollama_available():
+        log.warning("OCR requested but 'ollama' library not installed.")
         return []
+
+    return _deepseek_ocr_page(page, regions)
 
 
 def _page_number(page) -> int:
@@ -377,7 +345,7 @@ def get_capabilities() -> dict[str, bool | str]:
     return {
         "tables": True,
         "footer_detection": True,
-        "ocr": _marker_available(),
+        "ocr": _ollama_available(),
         "recommended_import": "from pdf2text_arabic import extract_pdf, extract_pdf_result",
     }
 
@@ -408,55 +376,23 @@ def extract_page(
         detect_footer: When *True*, automatically detect a footnote separator
             line and exclude everything below it.
         on_empty: What to do when a page has images whose content is NOT in
-            the text layer (fully image-only pages, OR mixed pages with a
-            rasterized table/figure alongside extractable text):
-            ``"ignore"`` — silently return the extractable text layer
-            (image content is lost without notice).
-            ``"warn"`` — log a warning AND return empty string (since the
-            page has missing content, we refuse to hand back a partial
-            result; callers can switch to ``"ignore"`` to get the text layer
-            anyway).
-            ``"ocr"`` — attempt OCR via Marker; if that still yields
-            nothing, log a warning and return empty string.
-        table_strategy: Strategy for PyMuPDF table detection (e.g. 'lines', 'lines_strict', 'text').
+            the text layer.
+        table_strategy: Strategy for PyMuPDF table detection.
     """
+    # 1. INITIAL CROP (Manual)
+    # This is the 'No Matter What' area.
     clip = _compute_clip(page.rect, crop_top, crop_bottom, crop_unit)
 
-    # --- Empty / image-only page detection ---
-    if _is_empty_page(page, clip):
-        page_num = _page_number(page)
-        if on_empty == "ocr":
-            # If the page is empty, treat the whole clip as the region
-            ocr_results = _ocr_page(page, [clip])
-            if ocr_results:
-                return "\n\n".join(text for _, text in ocr_results)
-            log.warning("Page %d: image-only, OCR returned no text", page_num)
-            return ""
-        if on_empty == "warn":
-            log.warning("Page %d: image-only, no extractable text", page_num)
-        return ""
-
-    # --- Mixed page detection: extractable text + image-based content block ---
-    mixed_regions = _image_only_regions(page, clip)
-    if mixed_regions:
-        page_num = _page_number(page)
-        if on_empty == "warn":
-            log.warning(
-                "Page %d: contains image-based content (e.g. rasterized table) "
-                "that is NOT in the text layer — returning empty, use "
-                "on_empty='ignore' to get the text layer anyway",
-                page_num,
-            )
-            return ""
-        if on_empty != "ocr":
-            mixed_regions = []
-
+    # 2. FOOTER DETECTION (Automatic)
+    # We do this immediately so OCR regions don't include footnote text.
+    footer_y = None
     if detect_footer:
         footer_y, guaranteed = detect_footer_y(page, clip)
         if footer_y is not None:
             apply_crop = True
             if not guaranteed:
-                kwargs = {"clip": clip}
+                # Don't cut through tables
+                kwargs: dict[str, Any] = {"clip": clip}
                 if table_strategy is not None:
                     kwargs["strategy"] = table_strategy
                 tabs = page.find_tables(**kwargs)
@@ -468,57 +404,73 @@ def extract_page(
             if apply_crop:
                 clip = fitz.Rect(clip.x0, clip.y0, clip.x1, footer_y - 1)
 
-    table_entries, t_bboxes = extract_tables(page, clip=clip, strategy=table_strategy)
+    # 3. CONTENT DETECTION
+    # Now we look for images ONLY within the final clipped/cropped area.
+    is_empty_selectable = _is_empty_page(page, clip)
+    mixed_regions = _image_only_regions(page, clip)
 
-    rawdict = page.get_text("rawdict", clip=clip)
-    body_size = _body_font_size(rawdict, t_bboxes)
     pieces: list[tuple[float, str]] = []
 
-    for block in rawdict["blocks"]:
-        if "lines" not in block:
-            continue
+    # 4. SELECTABLE EXTRACTION
+    # Extract digital text from the clipped area.
+    if not is_empty_selectable:
+        table_entries, t_bboxes = extract_tables(
+            page, clip=clip, strategy=table_strategy
+        )
 
-        bx0, by0, bx1, by1 = block["bbox"]
-        in_table = False
-        for tx0, ty0, tx1, ty1 in t_bboxes:
-            bcx = (bx0 + bx1) / 2
-            bcy = (by0 + by1) / 2
-            if tx0 <= bcx <= tx1 and ty0 <= bcy <= ty1:
-                in_table = True
-                break
-        if in_table:
-            continue
+        # Add Tables
+        for y_top, ttext in table_entries:
+            pieces.append((y_top, ttext))
 
-        rows = merge_lines_by_y(block["lines"])
-        rows.sort(key=lambda r: r["cy"])
+        # Add Text
+        rawdict = page.get_text("rawdict", clip=clip)
+        body_size = _body_font_size(rawdict, t_bboxes)
 
-        lines_text: list[str] = []
-        for row in rows:
-            spans = [s for s in row["spans"] if not _is_superscript(s, body_size)]
-            text = build_row_text(spans)
-            text = clean_arabic(text).strip()
-            if text:
-                lines_text.append(text)
+        for block in rawdict["blocks"]:
+            if "lines" not in block:
+                continue
 
-        if lines_text:
-            pieces.append((by0, "\n".join(lines_text)))
+            bx0, by0, bx1, by1 = block["bbox"]
 
-    for y_top, ttext in table_entries:
-        pieces.append((y_top, ttext))
+            # Skip if inside a detected table
+            if any(
+                tx0 <= (bx0 + bx1) / 2 <= tx1 and ty0 <= (by0 + by1) / 2 <= ty1
+                for tx0, ty0, tx1, ty1 in t_bboxes
+            ):
+                continue
 
-    # Splice in OCR'd image-only regions (mixed-page path)
-    if mixed_regions and on_empty == "ocr":
-        # Re-clamp regions to the (possibly footer-trimmed) clip so we don't
-        # OCR into a region that has since been cropped out.
-        final_regions = [
-            (r & clip) for r in mixed_regions if not (r & clip).is_empty
-        ]
-        ocr_results = _ocr_page(page, final_regions)
-        for y_top, ocr_text in ocr_results:
-            pieces.append((y_top, ocr_text))
+            rows = merge_lines_by_y(block["lines"])
+            rows.sort(key=lambda r: r["cy"])
 
+            lines_text: list[str] = []
+            for row in rows:
+                spans = [s for s in row["spans"] if not _is_superscript(s, body_size)]
+                text = build_row_text(spans)
+                text = clean_arabic(text).strip()
+
+                # Filter out standalone page numbers
+                if text and not _PAGE_NUMBER_RE.match(text):
+                    lines_text.append(text)
+
+            if lines_text:
+                pieces.append((by0, "\n".join(lines_text)))
+
+    # 5. OCR EXTRACTION
+    # Only if requested and we found image-only areas.
+    if on_empty == "ocr":
+        if is_empty_selectable:
+            # Full-page scanned document
+            ocr_results = _ocr_page(page, [clip])
+            for y_top, ocr_text in ocr_results:
+                pieces.append((y_top, ocr_text))
+        elif mixed_regions:
+            # Selectable page with one or more scanned images/tables
+            ocr_results = _ocr_page(page, mixed_regions)
+            for y_top, ocr_text in ocr_results:
+                pieces.append((y_top, ocr_text))
+
+    # 6. FINAL RECONSTRUCTION
     pieces.sort(key=lambda p: p[0])
-
     return "\n\n".join(text for _, text in pieces)
 
 
@@ -577,10 +529,10 @@ def extract_pdf_result(
     if not path.exists() or not path.is_file():
         raise InvalidPDFPathError(f"PDF path not found: {pdf_path}")
 
-    if on_empty == "ocr" and not _marker_available():
+    if on_empty == "ocr" and not _ollama_available():
         raise OCRUnavailableError(
-            "OCR requested (on_empty='ocr') but Marker is not installed. "
-            "Install with: pip install marker-pdf"
+            "OCR requested (on_empty='ocr') but 'ollama' library is not installed. "
+            "Install with: pip install ollama"
         )
 
     try:

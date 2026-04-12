@@ -16,6 +16,70 @@ import fitz
 from ._text import build_row_text, clean_arabic, merge_lines_by_y
 
 
+from html.parser import HTMLParser
+
+
+class TableParser(HTMLParser):
+    """Parses HTML tables into a nested list grid."""
+    def __init__(self):
+        super().__init__()
+        self.tables: list[list[list[str]]] = []
+        self.current_table: list[list[str]] = []
+        self.current_row: list[str] = []
+        self.current_cell = ""
+        self.in_td = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "table":
+            self.current_table = []
+        elif tag in ("tr", "th"):
+            self.current_row = []
+        elif tag == "td":
+            self.in_td = True
+            self.current_cell = ""
+
+    def handle_endtag(self, tag):
+        if tag == "td":
+            self.in_td = False
+            self.current_row.append(self.current_cell.strip())
+        elif tag in ("tr", "th"):
+            if any(self.current_row):
+                self.current_table.append(self.current_row)
+        elif tag == "table":
+            self.tables.append(self.current_table)
+
+    def handle_data(self, data):
+        if self.in_td:
+            self.current_cell += data
+
+
+def html_to_rag_text(html_input: str) -> str:
+    """Converts raw HTML table strings into RAG-friendly key:value blocks.
+
+    This uses the same logic as _format_rag_table but operates on raw HTML.
+    """
+    parser = TableParser()
+    parser.feed(html_input)
+
+    final_text = html_input
+    table_matches = re.findall(r"<table>.*?</table>", html_input, re.DOTALL)
+
+    for i, table_html in enumerate(table_matches):
+        if i >= len(parser.tables):
+            break
+
+        grid = parser.tables[i]
+        results: list[tuple[float, str]] = []
+        # We use a dummy y_top since we are replacing in-place
+        _format_rag_table(grid, 0.0, results)
+
+        if results:
+            _, rag_content = results[0]
+            final_text = final_text.replace(table_html, rag_content)
+
+    return final_text
+
+
 def _extract_cell_text(page, cell_bbox, extract_ref: str = "", rawdict=None) -> str:
     """Extract Arabic text from a table cell using the full rawdict pipeline.
 
@@ -164,32 +228,44 @@ def _format_rag_table(
 ) -> None:
     """Render a table as row-wise key: value blocks for RAG ingestion.
 
-    The first row is treated as headers.  Each subsequent row becomes a
-    self-contained block like::
-
-        نوع المحتوى: جدول
-        الرقم الترتيبي: 07
-        الجنحة: سياقة مركبة ...
-        النقط الواجب خصمها: 6
+    Logical rows that span multiple visual rows (empty ID column) are merged.
+    Blocks are separated by '---' for clean vector database chunking.
     """
-    if not grid:
+    if not grid or len(grid) < 2:
         return
 
     headers = grid[0]
-    blocks: list[str] = []
-
+    
+    # 1. Merge continued rows (where first column/ID is empty)
+    merged_rows: list[list[str]] = []
     for row in grid[1:]:
         # Skip entirely empty rows
         if not any(c.strip() for c in row):
             continue
-        lines = ["نوع المحتوى: جدول"]
+            
+        # If the first column (usually ID) is empty, merge text into the previous row
+        if not row[0].strip() and merged_rows:
+            prev = merged_rows[-1]
+            for j in range(1, min(len(row), len(prev))):
+                if row[j].strip():
+                    # Append text with a space
+                    prev[j] = (prev[j] + " " + row[j].strip()).strip()
+        else:
+            merged_rows.append([c.strip() for c in row])
+
+    # 2. Format as Key-Value blocks
+    blocks: list[str] = []
+    for row in merged_rows:
+        block_lines = []
         for i, cell in enumerate(row):
-            if not cell.strip():
+            if not cell.strip() or cell.strip() == "...":
                 continue
             header = headers[i] if i < len(headers) and headers[i].strip() else f"عمود {i + 1}"
-            lines.append(f"{header}: {cell.strip()}")
-        if len(lines) > 1:  # has at least one data field
-            blocks.append("\n".join(lines))
+            block_lines.append(f"{header}: {cell.strip()}")
+        
+        if block_lines:
+            # Wrap in separators for clear RAG retrieval
+            blocks.append("---\n" + "\n".join(block_lines) + "\n---")
 
     if blocks:
         results.append((y_top, "\n\n".join(blocks)))

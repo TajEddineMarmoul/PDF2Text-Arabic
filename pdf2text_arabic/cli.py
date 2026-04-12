@@ -60,7 +60,7 @@ def main():
             "How to handle image-only pages: "
             "'ignore' (skip silently), "
             "'warn' (log + skip), "
-            "'ocr' (use Marker OCR, warn if still empty). "
+            "'ocr' (use DeepSeek-OCR via Ollama, warn if still empty). "
             "Default: warn."
         ),
     )
