@@ -61,7 +61,10 @@ def _detect_footer_by_line(page, clip: fitz.Rect) -> float | None:
     return best_y
 
 def _detect_footer_by_smart_markers(page, clip: fitz.Rect) -> float | None:
-    """Strategy 2: Match superscripts in body to footnote lines."""
+    """Strategy 2: Match superscripts in body to footnote lines.
+    Also detects text-based separator lines (e.g., '___' or '---') and 
+    expands upwards to include unnumbered footnote paragraphs.
+    """
     data = page.get_text("rawdict", clip=clip, flags=fitz.TEXT_PRESERVE_WHITESPACE)
     
     # Get global font sizes to determine body vs superscript
@@ -82,8 +85,14 @@ def _detect_footer_by_smart_markers(page, clip: fitz.Rect) -> float | None:
             secondary_size = sz
             break
             
-    # The larger of the two is the body size
-    body_size = max(primary_size, secondary_size) if secondary_size else primary_size
+    # The larger of the two is the body size, the smaller is the footnote size
+    if secondary_size:
+        body_size = max(primary_size, secondary_size)
+        footnote_size = min(primary_size, secondary_size)
+    else:
+        body_size = primary_size
+        footnote_size = primary_size # Fallback if only one size exists
+        
     superscript_threshold = body_size * 0.85
 
     # 1. Collect potential superscript digits
@@ -100,13 +109,13 @@ def _detect_footer_by_smart_markers(page, clip: fitz.Rect) -> float | None:
                 if txt.isdigit():
                     superscript_values.add(txt)
 
-    if not superscript_values:
-        return None
-
-    # 2. Find lines starting with these digits
-    # Use 'dict' output to get assembled lines, less prone to RTL fragmentation than rawdict chars
+    # 2. Find text-based lines or lines starting with superscript digits
     dict_data = page.get_text("dict", clip=clip)
     best_y = None
+    
+    # Store lines to allow for "Upward Expansion"
+    # Format: [(y, text, dominant_size)]
+    lines_info = []
     
     for block in dict_data.get("blocks", []):
         if block.get("type") != 0:
@@ -122,6 +131,30 @@ def _detect_footer_by_smart_markers(page, clip: fitz.Rect) -> float | None:
                 
             y = line["bbox"][1] # Top Y of the line
             
+            # Calculate dominant size for this specific line (for Upward Expansion)
+            line_size_chars = {}
+            for span in line["spans"]:
+                txt = span.get("text", "").strip()
+                if txt:
+                    sz = round(span.get("size", 0))
+                    line_size_chars[sz] = line_size_chars.get(sz, 0) + len(txt)
+            line_dominant_size = max(line_size_chars.items(), key=lambda x: x[1])[0] if line_size_chars else footnote_size
+            
+            lines_info.append((y, line_text, line_dominant_size))
+            
+            # Check for text-based separator line (e.g., '_________', '---------', '.........')
+            # Must be at least 10 chars long and consist almost entirely of line-drawing characters
+            stripped_line = line_text.replace(" ", "")
+            if len(stripped_line) >= 10 and all(c in '_-ـ.' for c in stripped_line):
+                # Ensure it's in the lower 80% of the page
+                if y > (clip.y0 + (clip.y1 - clip.y0) * 0.2):
+                    if best_y is None or y < best_y:
+                        best_y = y
+                continue # If it's a line, no need to check for superscripts
+
+            if not superscript_values:
+                continue
+
             for val in superscript_values:
                 # Check if line starts with the value followed by common separators or space
                 if line_text.startswith(val):
@@ -132,6 +165,33 @@ def _detect_footer_by_smart_markers(page, clip: fitz.Rect) -> float | None:
                             best_y = y
                         break
                         
+    # 3. Upward Expansion
+    # If we found a marker (like '55-'), check the lines immediately above it.
+    # If they are unnumbered paragraphs using the small footnote font, include them in the footer.
+    if best_y is not None and secondary_size is not None:
+        # Sort lines by Y to walk upwards
+        lines_info.sort(key=lambda x: x[0])
+        
+        # Find the index of the line that matches best_y
+        marker_index = -1
+        for i, (y, _, _) in enumerate(lines_info):
+            if y == best_y:
+                marker_index = i
+                break
+                
+        if marker_index > 0:
+            # Walk upwards from the marker
+            for i in range(marker_index - 1, -1, -1):
+                prev_y, prev_text, prev_size = lines_info[i]
+                
+                # If the line above is the small footnote font (with a small tolerance)
+                if prev_size <= footnote_size + 0.5:
+                    # Move the boundary up!
+                    best_y = prev_y
+                else:
+                    # We hit the larger body text. Stop expanding upwards.
+                    break
+
     return best_y
 
 def _detect_footer_by_global_clustering(page, clip: fitz.Rect) -> float | None:

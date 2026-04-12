@@ -308,7 +308,7 @@ def _deepseek_ocr_page(
                 results.append((region.y0, rag_text.strip()))
 
         except Exception as exc:
-            log.warning("Ollama OCR failed for region: %s", exc)
+            raise RuntimeError(f"Ollama OCR failed for region: {exc}") from exc
 
     return results
 
