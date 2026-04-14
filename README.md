@@ -108,6 +108,9 @@ Extract text from all pages of a PDF.
 | `crop_bottom` | `float` | `0` | Crop from bottom of each page |
 | `crop_unit` | `"px" \| "pct"` | `"px"` | Unit: points or percentage of page height |
 | `detect_footer` | `bool` | `True` | Auto-detect footnote separator lines and exclude content below |
+| `on_empty` | `"ignore" \| "warn" \| "auto" \| "ocr"` | `"warn"` | Handle image-only pages. `"auto"` attempts text then uses Gemini OCR for images. `"ocr"` forces full-page Gemini OCR. |
+| `table_strategy` | `str \| None` | `None` | Strategy for PyMuPDF table detection (e.g. `"lines"`, `"text"`) |
+| `gemini_model` | `str` | `"gemini-3-flash-preview"` | Google Gemini model to use when `on_empty` is `"auto"` or `"ocr"`. Requires `GEMINI_API_KEY`. |
 
 ### `extract_page(page, **kwargs) → str`
 
@@ -121,7 +124,8 @@ Structured output for AI/automation:
 - `pages_total`: total page count
 - `pages_with_text`: number of non-empty extracted pages
 - `empty_pages`: list of page numbers that produced empty output
-- `warnings`: machine-readable warning tokens (example: `empty_page:3`)
+- `mixed_pages`: list of page numbers that contain extractable text AND image blocks requiring OCR
+- `warnings`: machine-readable warning tokens (example: `empty_page:3`, `mixed_page:1`)
 
 ## Features
 

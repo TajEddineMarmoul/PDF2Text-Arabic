@@ -11,3 +11,7 @@ wheels/
 
 # Output
 output/
+
+# Test/Preview Images and Notebooks
+*.png
+*.ipynb
