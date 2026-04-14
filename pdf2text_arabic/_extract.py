@@ -283,7 +283,7 @@ def _deepseek_ocr_page(
             # Added "Ignore headers/footers" to the instruction
             response = ollama.generate(
                 model="deepseek-ocr:latest",
-                prompt="<|grounding|>Convert the document to text.",
+                prompt="<|grounding|>Extract the document text and tables. Ignore headers, footers, and page numbers.",
                 images=[img_bytes],
                 stream=False,
                 options={"temperature": 0, "num_predict": 2048, "repeat_penalty": 1.5},
