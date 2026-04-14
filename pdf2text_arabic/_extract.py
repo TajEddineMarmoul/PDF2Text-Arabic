@@ -57,7 +57,28 @@ class InvalidPDFPathError(PDFArabicError):
 
 
 class OCRUnavailableError(PDFArabicError):
-    """Raised when OCR is requested but 'ollama' library is not installed."""
+    """Raised when OCR is requested but the selected backend is unavailable."""
+
+
+# Default Gemini model used for OCR. Override via ``gemini_model`` kwarg.
+_DEFAULT_GEMINI_MODEL = "gemini-3-flash-preview"
+
+# Prompt for Gemini OCR that emits the pipeline's native RAG block format
+# for tables (no Markdown pipes) and strips footnotes/headers/page numbers.
+_GEMINI_OCR_PROMPT = """You are an expert OCR system specialized in extracting complex official Arabic documents, including legal, technical, and administrative records. Extract all Arabic text exactly as it appears without translating or summarizing. Do not auto-correct spelling.
+
+CRITICAL TABLE INSTRUCTIONS:
+Do NOT use standard Markdown table formatting (do not use the | pipe character). Instead, extract every table by representing each row as a vertical block separated by ---. Map the column header to the cell value exactly like this:
+---
+Header 1: [Cell Value]
+Header 2: [Cell Value]
+Header 3: [Cell Value]
+---
+
+If a cell is empty, do not include that line. Do not generate completely empty table rows.
+
+EXCLUSIONS:
+Strictly ignore and DO NOT extract any footnotes at the bottom of the page. You must also ignore and remove any superscript footnote markers (e.g., ¹, ², ³) embedded within the main text. Ignore all page headers, page numbers, and stamps. Only extract the core body content."""
 
 
 @dataclass(slots=True)
@@ -247,6 +268,75 @@ def _ollama_available() -> bool:
         return False
 
 
+def _gemini_available() -> bool:
+    """Return True if the google-genai library is installed."""
+    try:
+        from google import genai  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+def _load_gemini_api_key() -> str | None:
+    """Return the Gemini API key, loading .env first if python-dotenv is present."""
+    import os
+
+    if not os.environ.get("GEMINI_API_KEY"):
+        try:
+            from dotenv import find_dotenv, load_dotenv
+
+            load_dotenv(find_dotenv(usecwd=True))
+        except ImportError:
+            pass
+    return os.environ.get("GEMINI_API_KEY")
+
+
+def _gemini_ocr_page(
+    page,
+    regions: list[fitz.Rect],
+    *,
+    model: str = _DEFAULT_GEMINI_MODEL,
+) -> list[tuple[float, str]]:
+    """Run Gemini OCR on specific image regions of a page.
+
+    Gemini emits the RAG ``---`` block format directly (per the prompt), so
+    no HTML-table post-processing is applied.
+    """
+    from google import genai
+    from PIL import Image
+    import io
+
+    api_key = _load_gemini_api_key()
+    if not api_key:
+        raise RuntimeError(
+            "GEMINI_API_KEY is not set. Add it to your .env or environment."
+        )
+
+    client = genai.Client(api_key=api_key)
+    results: list[tuple[float, str]] = []
+
+    for idx, region in enumerate(regions):
+        pix = page.get_pixmap(clip=region, dpi=300)
+        debug_name = f"ocr_surgical_crop_{idx}.png"
+        pix.save(debug_name)
+
+        img = Image.open(io.BytesIO(pix.tobytes("png")))
+
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=[_GEMINI_OCR_PROMPT, img],
+            )
+            text = (response.text or "").strip()
+            if text:
+                results.append((region.y0, text))
+        except Exception as exc:
+            raise RuntimeError(f"Gemini OCR failed for region: {exc}") from exc
+
+    return results
+
+
 def clean_deepseek_output(text: str) -> str:
     """Removes grounding tags, coordinate markers, and OCR artifacts."""
     # 1. Remove visual grounding tags
@@ -311,17 +401,37 @@ def _deepseek_ocr_page(
 def _ocr_page(
     page,
     regions: list[fitz.Rect],
+    *,
+    backend: Literal["ollama", "gemini"] = "ollama",
+    gemini_model: str = _DEFAULT_GEMINI_MODEL,
 ) -> list[tuple[float, str]]:
-    """OCR a page's image regions using DeepSeek-OCR via Ollama.
+    """OCR a page's image regions using the selected backend.
+
+    Args:
+        page: PyMuPDF page.
+        regions: Image regions to OCR.
+        backend: ``"ollama"`` (DeepSeek-OCR local) or ``"gemini"`` (Google).
+        gemini_model: Model id used when ``backend="gemini"``.
 
     Returns extracted text tuples, or empty list if OCR fails.
     """
-    if not _ollama_available():
-        raise RuntimeError(
-            "OCR requested but 'ollama' library is not installed or accessible. Please install it and ensure Ollama is running."
-        )
+    if backend == "ollama":
+        if not _ollama_available():
+            raise RuntimeError(
+                "OCR requested but 'ollama' library is not installed or accessible. "
+                "Please install it and ensure Ollama is running."
+            )
+        return _deepseek_ocr_page(page, regions)
 
-    return _deepseek_ocr_page(page, regions)
+    if backend == "gemini":
+        if not _gemini_available():
+            raise RuntimeError(
+                "OCR requested but 'google-genai' is not installed. "
+                "Install with: pip install google-genai python-dotenv"
+            )
+        return _gemini_ocr_page(page, regions, model=gemini_model)
+
+    raise ValueError(f"Unknown OCR backend: {backend!r}")
 
 
 def _page_number(page) -> int:
@@ -338,10 +448,13 @@ def get_capabilities() -> dict[str, bool | str]:
     This helper is intended for agents and orchestration code to determine
     whether optional features like OCR are available before choosing options.
     """
+    ollama_ok = _ollama_available()
+    gemini_ok = _gemini_available() and bool(_load_gemini_api_key())
     return {
         "tables": True,
         "footer_detection": True,
-        "ocr": _ollama_available(),
+        "ocr": ollama_ok or gemini_ok,
+        "ocr_backends": {"ollama": ollama_ok, "gemini": gemini_ok},
         "recommended_import": "from pdf2text_arabic import extract_pdf, extract_pdf_result",
     }
 
@@ -360,6 +473,8 @@ def extract_page(
     detect_footer: bool = True,
     on_empty: Literal["ignore", "warn", "ocr"] = "warn",
     table_strategy: str | None = None,
+    ocr_backend: Literal["ollama", "gemini"] = "ollama",
+    gemini_model: str = _DEFAULT_GEMINI_MODEL,
 ) -> str:
     """Extract corrected Arabic text from one PyMuPDF page.
 
@@ -374,6 +489,8 @@ def extract_page(
         on_empty: What to do when a page has images whose content is NOT in
             the text layer.
         table_strategy: Strategy for PyMuPDF table detection.
+        ocr_backend: Which OCR backend to use when ``on_empty="ocr"``.
+        gemini_model: Model id when ``ocr_backend="gemini"``.
     """
     # 1. INITIAL CROP (Manual)
     # This is the 'No Matter What' area.
@@ -456,12 +573,16 @@ def extract_page(
     if on_empty == "ocr":
         if is_empty_selectable:
             # Full-page scanned document
-            ocr_results = _ocr_page(page, [clip])
+            ocr_results = _ocr_page(
+                page, [clip], backend=ocr_backend, gemini_model=gemini_model
+            )
             for y_top, ocr_text in ocr_results:
                 pieces.append((y_top, ocr_text))
         elif mixed_regions:
             # Selectable page with one or more scanned images/tables
-            ocr_results = _ocr_page(page, mixed_regions)
+            ocr_results = _ocr_page(
+                page, mixed_regions, backend=ocr_backend, gemini_model=gemini_model
+            )
             for y_top, ocr_text in ocr_results:
                 pieces.append((y_top, ocr_text))
 
@@ -479,6 +600,8 @@ def extract_pdf(
     detect_footer: bool = True,
     on_empty: Literal["ignore", "warn", "ocr"] = "warn",
     table_strategy: str | None = None,
+    ocr_backend: Literal["ollama", "gemini"] = "ollama",
+    gemini_model: str = _DEFAULT_GEMINI_MODEL,
 ) -> str:
     """Extract Arabic text from a PDF file.
 
@@ -491,6 +614,9 @@ def extract_pdf(
         on_empty: How to handle image-only pages (``"ignore"``, ``"warn"``,
             or ``"ocr"``).
         table_strategy: Strategy for PyMuPDF table detection.
+        ocr_backend: ``"ollama"`` (default, local DeepSeek-OCR) or ``"gemini"``
+            (Google Gemini, requires ``GEMINI_API_KEY`` in environment or .env).
+        gemini_model: Model id when ``ocr_backend="gemini"``.
 
     Returns:
         The full extracted text with pages separated by double newlines.
@@ -503,6 +629,8 @@ def extract_pdf(
         detect_footer=detect_footer,
         on_empty=on_empty,
         table_strategy=table_strategy,
+        ocr_backend=ocr_backend,
+        gemini_model=gemini_model,
     ).text
 
 
@@ -515,6 +643,8 @@ def extract_pdf_result(
     detect_footer: bool = True,
     on_empty: Literal["ignore", "warn", "ocr"] = "warn",
     table_strategy: str | None = None,
+    ocr_backend: Literal["ollama", "gemini"] = "ollama",
+    gemini_model: str = _DEFAULT_GEMINI_MODEL,
 ) -> ExtractionResult:
     """Extract Arabic text and return structured metadata.
 
@@ -525,11 +655,23 @@ def extract_pdf_result(
     if not path.exists() or not path.is_file():
         raise InvalidPDFPathError(f"PDF path not found: {pdf_path}")
 
-    if on_empty == "ocr" and not _ollama_available():
-        raise OCRUnavailableError(
-            "OCR requested (on_empty='ocr') but 'ollama' library is not installed. "
-            "Install with: pip install ollama"
-        )
+    if on_empty == "ocr":
+        if ocr_backend == "ollama" and not _ollama_available():
+            raise OCRUnavailableError(
+                "OCR requested (on_empty='ocr', ocr_backend='ollama') but "
+                "'ollama' library is not installed. Install with: pip install ollama"
+            )
+        if ocr_backend == "gemini":
+            if not _gemini_available():
+                raise OCRUnavailableError(
+                    "OCR requested (on_empty='ocr', ocr_backend='gemini') but "
+                    "'google-genai' is not installed. "
+                    "Install with: pip install google-genai python-dotenv"
+                )
+            if not _load_gemini_api_key():
+                raise OCRUnavailableError(
+                    "GEMINI_API_KEY is not set. Add it to your .env or environment."
+                )
 
     try:
         doc = fitz.open(pdf_path)
@@ -555,6 +697,8 @@ def extract_pdf_result(
             detect_footer=detect_footer,
             on_empty=on_empty,
             table_strategy=table_strategy,
+            ocr_backend=ocr_backend,
+            gemini_model=gemini_model,
         )
 
         if is_mixed:
