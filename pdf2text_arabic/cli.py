@@ -54,13 +54,14 @@ def main():
     )
     parser.add_argument(
         "--on-empty",
-        choices=["ignore", "warn", "ocr"],
+        choices=["ignore", "warn", "ocr", "auto"],
         default="warn",
         help=(
             "How to handle image-only pages: "
             "'ignore' (skip silently), "
             "'warn' (log + skip), "
-            "'ocr' (use DeepSeek-OCR via Ollama, warn if still empty). "
+            "'auto' (try text extraction first, then OCR for images), "
+            "'ocr' (force OCR only without text extraction). "
             "Default: warn."
         ),
     )

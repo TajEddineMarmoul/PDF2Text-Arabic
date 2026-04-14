@@ -16,7 +16,6 @@ from ._ocr import (
     DEFAULT_GEMINI_MODEL,
     gemini_available,
     load_gemini_api_key,
-    ollama_available,
     run_ocr,
 )
 from ._tables import extract_tables
@@ -64,7 +63,11 @@ class InvalidPDFPathError(PDFArabicError):
 
 
 class OCRUnavailableError(PDFArabicError):
-    """Raised when OCR is requested but the selected backend is unavailable."""
+    """Raised when OCR is requested but Gemini is not configured.
+
+    Either ``google-genai`` is not installed or ``GEMINI_API_KEY`` is missing
+    from the environment and ``.env`` file.
+    """
 
 
 @dataclass(slots=True)
@@ -94,7 +97,7 @@ class ExtractionResult:
     warnings: list[str]
 
 
-def _is_superscript(span: dict, body_size: float) -> bool:
+def _is_superscript(span: dict[str, Any], body_size: float) -> bool:
     """Return True if *span* looks like a footnote superscript indicator.
 
     Uses a ratio of the page's dominant body font size so the detection
@@ -109,7 +112,9 @@ def _is_superscript(span: dict, body_size: float) -> bool:
     return len(text) > 0 and text.isdigit()
 
 
-def _body_font_size(rawdict: dict, t_bboxes: list[tuple]) -> float:
+def _body_font_size(
+    rawdict: dict[str, Any], t_bboxes: list[tuple[float, float, float, float]]
+) -> float:
     """Determine the dominant body font size from non-table text blocks.
 
     Returns 0 if no usable text is found (caller should skip filtering).
@@ -165,7 +170,7 @@ def _compute_clip(
     return fitz.Rect(page_rect.x0, top, page_rect.x1, bottom)
 
 
-def _is_empty_page(page, clip: fitz.Rect) -> bool:
+def _is_empty_page(page: fitz.Page, clip: fitz.Rect) -> bool:
     """Return True if *page* has no meaningful text (image-only / scanned).
 
     A page is empty when its text content (ignoring page-number patterns
@@ -182,7 +187,7 @@ def _is_empty_page(page, clip: fitz.Rect) -> bool:
     return len(meaningful) < _EMPTY_TEXT_THRESHOLD
 
 
-def _image_only_regions(page, clip: fitz.Rect) -> list[fitz.Rect]:
+def _image_only_regions(page: fitz.Page, clip: fitz.Rect) -> list[fitz.Rect]:
     """Return surgical bboxes of regions that likely need OCR.
 
     It finds image placements within the clip, then subtracts the area
@@ -190,16 +195,18 @@ def _image_only_regions(page, clip: fitz.Rect) -> list[fitz.Rect]:
     parts of the page.
     """
     # 1. Find all selectable text blocks in the clip
+    blocks: list[tuple[Any, ...]] = page.get_text("blocks", clip=clip)  # type: ignore[assignment]
     text_bboxes = [
         fitz.Rect(b[:4])
-        for b in page.get_text("blocks", clip=clip)
+        for b in blocks
         if b[6] == 0 and b[4].strip()  # type 0 is text
     ]
 
     regions: list[fitz.Rect] = []
 
     # 2. Inspect image objects
-    for img in page.get_image_info():
+    image_infos: list[dict[str, Any]] = page.get_image_info()  # type: ignore[assignment]
+    for img in image_infos:
         # FORCE strict intersection with our manual crop clip
         img_bbox = fitz.Rect(img["bbox"]) & clip
 
@@ -234,13 +241,13 @@ def _image_only_regions(page, clip: fitz.Rect) -> list[fitz.Rect]:
     return regions
 
 
-def _has_content_images(page, clip: fitz.Rect) -> bool:
+def _has_content_images(page: fitz.Page, clip: fitz.Rect) -> bool:
     """Return True if *page* has at least one image-only content region."""
     return bool(_image_only_regions(page, clip))
 
 
 
-def _page_number(page) -> int:
+def _page_number(page: fitz.Page) -> int:
     """Return a safe 1-based page number for logs and metadata."""
     number = getattr(page, "number", None)
     if isinstance(number, int) and number >= 0:
@@ -254,13 +261,10 @@ def get_capabilities() -> dict[str, Any]:
     This helper is intended for agents and orchestration code to determine
     whether optional features like OCR are available before choosing options.
     """
-    ollama_ok = ollama_available()
-    gemini_ok = gemini_available() and bool(load_gemini_api_key())
     return {
         "tables": True,
         "footer_detection": True,
-        "ocr": ollama_ok or gemini_ok,
-        "ocr_backends": {"ollama": ollama_ok, "gemini": gemini_ok},
+        "ocr": gemini_available() and bool(load_gemini_api_key()),
         "recommended_import": "from pdf2text_arabic import extract_pdf, extract_pdf_result",
     }
 
@@ -271,15 +275,14 @@ def get_capabilities() -> dict[str, Any]:
 
 
 def extract_page(
-    page,
+    page: fitz.Page,
     *,
     crop_top: float = 0,
     crop_bottom: float = 0,
     crop_unit: Literal["px", "pct"] = "px",
     detect_footer: bool = True,
-    on_empty: Literal["ignore", "warn", "ocr"] = "warn",
+    on_empty: Literal["ignore", "warn", "ocr", "auto"] = "warn",
     table_strategy: str | None = None,
-    ocr_backend: Literal["ollama", "gemini"] = "ollama",
     gemini_model: str = DEFAULT_GEMINI_MODEL,
 ) -> str:
     """Extract corrected Arabic text from one PyMuPDF page.
@@ -293,10 +296,9 @@ def extract_page(
         detect_footer: When *True*, automatically detect a footnote separator
             line and exclude everything below it.
         on_empty: What to do when a page has images whose content is NOT in
-            the text layer.
+            the text layer (``"ignore"``, ``"warn"``, ``"auto"``, or ``"ocr"``).
         table_strategy: Strategy for PyMuPDF table detection.
-        ocr_backend: Which OCR backend to use when ``on_empty="ocr"``.
-        gemini_model: Model id when ``ocr_backend="gemini"``.
+        gemini_model: Gemini model id used when ``on_empty="ocr"`` or ``"auto"``.
     """
     # 1. INITIAL CROP (Manual)
     # This is the 'No Matter What' area.
@@ -332,7 +334,7 @@ def extract_page(
 
     # 4. SELECTABLE EXTRACTION
     # Extract digital text from the clipped area.
-    if not is_empty_selectable:
+    if on_empty != "ocr" and (on_empty == "auto" or not is_empty_selectable):
         table_entries, t_bboxes = extract_tables(
             page, clip=clip, strategy=table_strategy
         )
@@ -342,7 +344,7 @@ def extract_page(
             pieces.append((y_top, ttext))
 
         # Add Text
-        rawdict = page.get_text("rawdict", clip=clip)
+        rawdict: dict[str, Any] = page.get_text("rawdict", clip=clip)  # type: ignore[assignment]
         body_size = _body_font_size(rawdict, t_bboxes)
 
         for block in rawdict["blocks"]:
@@ -376,21 +378,17 @@ def extract_page(
 
     # 5. OCR EXTRACTION
     # Only if requested and we found image-only areas.
-    if on_empty == "ocr":
-        if is_empty_selectable:
-            # Full-page scanned document
-            ocr_results = run_ocr(
-                page, [clip], backend=ocr_backend, gemini_model=gemini_model
-            )
+    if on_empty == "auto":
+        if mixed_regions:
+            # Run surgical OCR on any detected image regions
+            ocr_results = run_ocr(page, mixed_regions, model=gemini_model)
             for y_top, ocr_text in ocr_results:
                 pieces.append((y_top, ocr_text))
-        elif mixed_regions:
-            # Selectable page with one or more scanned images/tables
-            ocr_results = run_ocr(
-                page, mixed_regions, backend=ocr_backend, gemini_model=gemini_model
-            )
-            for y_top, ocr_text in ocr_results:
-                pieces.append((y_top, ocr_text))
+    elif on_empty == "ocr":
+        # Force full-page OCR of the cropped area regardless of text
+        ocr_results = run_ocr(page, [clip], model=gemini_model)
+        for y_top, ocr_text in ocr_results:
+            pieces.append((y_top, ocr_text))
 
     # 6. FINAL RECONSTRUCTION
     pieces.sort(key=lambda p: p[0])
@@ -404,9 +402,8 @@ def extract_pdf(
     crop_bottom: float = 0,
     crop_unit: Literal["px", "pct"] = "px",
     detect_footer: bool = True,
-    on_empty: Literal["ignore", "warn", "ocr"] = "warn",
+    on_empty: Literal["ignore", "warn", "ocr", "auto"] = "warn",
     table_strategy: str | None = None,
-    ocr_backend: Literal["ollama", "gemini"] = "ollama",
     gemini_model: str = DEFAULT_GEMINI_MODEL,
 ) -> str:
     """Extract Arabic text from a PDF file.
@@ -418,11 +415,10 @@ def extract_pdf(
         crop_unit: ``"px"`` for points/pixels, ``"pct"`` for percentage.
         detect_footer: Auto-detect footnote separator lines and crop below.
         on_empty: How to handle image-only pages (``"ignore"``, ``"warn"``,
-            or ``"ocr"``).
+            ``"auto"``, or ``"ocr"``).
         table_strategy: Strategy for PyMuPDF table detection.
-        ocr_backend: ``"ollama"`` (default, local DeepSeek-OCR) or ``"gemini"``
-            (Google Gemini, requires ``GEMINI_API_KEY`` in environment or .env).
-        gemini_model: Model id when ``ocr_backend="gemini"``.
+        gemini_model: Gemini model id used when ``on_empty="ocr"`` or ``"auto"``
+            (requires ``GEMINI_API_KEY`` in environment or .env).
 
     Returns:
         The full extracted text with pages separated by double newlines.
@@ -435,7 +431,6 @@ def extract_pdf(
         detect_footer=detect_footer,
         on_empty=on_empty,
         table_strategy=table_strategy,
-        ocr_backend=ocr_backend,
         gemini_model=gemini_model,
     ).text
 
@@ -447,9 +442,8 @@ def extract_pdf_result(
     crop_bottom: float = 0,
     crop_unit: Literal["px", "pct"] = "px",
     detect_footer: bool = True,
-    on_empty: Literal["ignore", "warn", "ocr"] = "warn",
+    on_empty: Literal["ignore", "warn", "ocr", "auto"] = "warn",
     table_strategy: str | None = None,
-    ocr_backend: Literal["ollama", "gemini"] = "ollama",
     gemini_model: str = DEFAULT_GEMINI_MODEL,
 ) -> ExtractionResult:
     """Extract Arabic text and return structured metadata.
@@ -461,23 +455,16 @@ def extract_pdf_result(
     if not path.exists() or not path.is_file():
         raise InvalidPDFPathError(f"PDF path not found: {pdf_path}")
 
-    if on_empty == "ocr":
-        if ocr_backend == "ollama" and not ollama_available():
+    if on_empty in ("ocr", "auto"):
+        if not gemini_available():
             raise OCRUnavailableError(
-                "OCR requested (on_empty='ocr', ocr_backend='ollama') but "
-                "'ollama' library is not installed. Install with: pip install ollama"
+                "OCR requested (on_empty='ocr' or 'auto') but 'google-genai' is not installed. "
+                "Install with: pip install google-genai python-dotenv"
             )
-        if ocr_backend == "gemini":
-            if not gemini_available():
-                raise OCRUnavailableError(
-                    "OCR requested (on_empty='ocr', ocr_backend='gemini') but "
-                    "'google-genai' is not installed. "
-                    "Install with: pip install google-genai python-dotenv"
-                )
-            if not load_gemini_api_key():
-                raise OCRUnavailableError(
-                    "GEMINI_API_KEY is not set. Add it to your .env or environment."
-                )
+        if not load_gemini_api_key():
+            raise OCRUnavailableError(
+                "GEMINI_API_KEY is not set. Add it to your .env or environment."
+            )
 
     try:
         doc = fitz.open(pdf_path)
@@ -503,7 +490,6 @@ def extract_pdf_result(
             detect_footer=detect_footer,
             on_empty=on_empty,
             table_strategy=table_strategy,
-            ocr_backend=ocr_backend,
             gemini_model=gemini_model,
         )
 
