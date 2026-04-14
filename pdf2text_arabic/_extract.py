@@ -330,7 +330,7 @@ def extract_page(
     is_empty_selectable = _is_empty_page(page, clip)
     mixed_regions = _image_only_regions(page, clip)
 
-    pieces: list[tuple[float, str]] = []
+    pieces: list[tuple[float, float, float, str]] = []
 
     # 4. SELECTABLE EXTRACTION
     # Extract digital text from the clipped area.
@@ -340,8 +340,8 @@ def extract_page(
         )
 
         # Add Tables
-        for y_top, ttext in table_entries:
-            pieces.append((y_top, ttext))
+        for (y_top, ttext), (tx0, ty0, tx1, ty1) in zip(table_entries, t_bboxes):
+            pieces.append((y_top, tx0, tx1, ttext))
 
         # Add Text
         rawdict: dict[str, Any] = page.get_text("rawdict", clip=clip)  # type: ignore[assignment]
@@ -374,7 +374,7 @@ def extract_page(
                     lines_text.append(text)
 
             if lines_text:
-                pieces.append((by0, "\n".join(lines_text)))
+                pieces.append((by0, bx0, bx1, "\n".join(lines_text)))
 
     # 5. OCR EXTRACTION
     # Only if requested and we found image-only areas.
@@ -382,17 +382,48 @@ def extract_page(
         if mixed_regions:
             # Run surgical OCR on any detected image regions
             ocr_results = run_ocr(page, mixed_regions, model=gemini_model)
-            for y_top, ocr_text in ocr_results:
-                pieces.append((y_top, ocr_text))
+            for (y_top, ocr_text), region in zip(ocr_results, mixed_regions):
+                pieces.append((y_top, region.x0, region.x1, ocr_text))
     elif on_empty == "ocr":
         # Force full-page OCR of the cropped area regardless of text
         ocr_results = run_ocr(page, [clip], model=gemini_model)
         for y_top, ocr_text in ocr_results:
-            pieces.append((y_top, ocr_text))
+            pieces.append((y_top, clip.x0, clip.x1, ocr_text))
 
     # 6. FINAL RECONSTRUCTION
-    pieces.sort(key=lambda p: p[0])
-    return "\n\n".join(text for _, text in pieces)
+    mid_x = clip.x0 + clip.width / 2
+    left_count = 0
+    right_count = 0
+    span_count = 0
+
+    for _, x0, x1, text in pieces:
+        if text.startswith("---"): 
+            continue
+        width = x1 - x0
+        if width > clip.width * 0.6:
+            span_count += 1
+        elif x1 < mid_x + 20:
+            left_count += 1
+        elif x0 > mid_x - 20:
+            right_count += 1
+
+    is_two_column = (left_count > 2 and right_count > 2 and span_count < max(left_count, right_count))
+
+    if is_two_column:
+        def sort_key(p):
+            y_top, x0, x1, text = p
+            if y_top < clip.y0 + clip.height * 0.2 and (x1 - x0 > clip.width * 0.4):
+                return (0, y_top)
+            if x0 > mid_x - 20:
+                col = 1 # Right
+            else:
+                col = 2 # Left
+            return (col, y_top)
+        pieces.sort(key=sort_key)
+    else:
+        pieces.sort(key=lambda p: p[0])
+
+    return "\n\n".join(text for *_, text in pieces)
 
 
 def extract_pdf(
