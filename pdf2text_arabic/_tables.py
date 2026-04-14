@@ -9,7 +9,6 @@ Merged cells are filled down to make each row self-contained.
 from __future__ import annotations
 
 import re
-from typing import Literal
 
 import fitz
 
@@ -241,7 +240,6 @@ def extract_tables(
     return results, bboxes
 
 
-
 def _format_rag_table(
     grid: list[list[str]],
     y_top: float,
@@ -256,14 +254,14 @@ def _format_rag_table(
         return
 
     headers = grid[0]
-    
+
     # 1. Merge continued rows (where first column/ID is empty)
     merged_rows: list[list[str]] = []
     for row in grid[1:]:
         # Skip entirely empty rows
         if not any(c.strip() for c in row):
             continue
-            
+
         # If the first column (usually ID) is empty, merge text into the previous row
         if not row[0].strip() and merged_rows:
             prev = merged_rows[-1]
@@ -281,9 +279,13 @@ def _format_rag_table(
         for i, cell in enumerate(row):
             if not cell.strip() or cell.strip() == "...":
                 continue
-            header = headers[i] if i < len(headers) and headers[i].strip() else f"عمود {i + 1}"
+            header = (
+                headers[i]
+                if i < len(headers) and headers[i].strip()
+                else f"عمود {i + 1}"
+            )
             block_lines.append(f"{header}: {cell.strip()}")
-        
+
         if block_lines:
             # Wrap in separators for clear RAG retrieval
             blocks.append("---\n" + "\n".join(block_lines) + "\n---")
