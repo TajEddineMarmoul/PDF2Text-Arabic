@@ -92,8 +92,6 @@ def run_ocr(
 
     for idx, region in enumerate(regions):
         pix = page.get_pixmap(clip=region, dpi=300)
-        debug_name = f"ocr_surgical_crop_{idx}.png"
-        pix.save(debug_name)
 
         img = Image.open(io.BytesIO(pix.tobytes("png")))
 

@@ -15,6 +15,10 @@ from ._chars import fix_zero_width_clusters, is_arabic
 # ---------------------------------------------------------------------------
 
 _ZW_RE = re.compile(r"[\u200b\u200c\u200d\ufeff\u200e\u200f]")
+_ARABIC_DIGIT_RE = re.compile(r"([\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF])(\d)")
+_DIGIT_ARABIC_RE = re.compile(r"(\d)([\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF])")
+_SPACES_RE = re.compile(r"[ \t]+")
+_NEWLINES_RE = re.compile(r"\n{3,}")
 
 # ---------------------------------------------------------------------------
 # Public functions
@@ -26,10 +30,10 @@ def clean_arabic(text: str) -> str:
     text = unicodedata.normalize("NFKC", text)
     text = _ZW_RE.sub("", text)
     text = text.replace("\u0640", "")
-    text = re.sub(r"([\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF])(\d)", r"\1 \2", text)
-    text = re.sub(r"(\d)([\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF])", r"\1 \2", text)
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = _ARABIC_DIGIT_RE.sub(r"\1 \2", text)
+    text = _DIGIT_ARABIC_RE.sub(r"\1 \2", text)
+    text = _SPACES_RE.sub(" ", text)
+    text = _NEWLINES_RE.sub("\n\n", text)
     return text
 
 

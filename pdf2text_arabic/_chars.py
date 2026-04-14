@@ -5,6 +5,7 @@ and near-overlap repositioning — all caused by PyMuPDF decomposing Arabic
 ligature glyphs into visual LTR byte order.
 """
 
+import functools
 import re
 import unicodedata
 
@@ -17,6 +18,7 @@ ARABIC_RE = re.compile(
 )
 
 
+@functools.lru_cache(maxsize=256)
 def is_arabic(c: str) -> bool:
     """Check if a character is Arabic (after NFKC normalization)."""
     return bool(ARABIC_RE.match(unicodedata.normalize("NFKC", c)))
