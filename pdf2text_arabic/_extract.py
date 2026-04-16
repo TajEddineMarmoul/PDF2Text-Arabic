@@ -304,21 +304,25 @@ def extract_page(
     # This is the 'No Matter What' area.
     clip = _compute_clip(page.rect, crop_top, crop_bottom, crop_unit)
 
+    # 1.5. PRE-EXTRACT TABLES
+    # We need table bounding boxes early to pass to footer detection so it doesn't
+    # mistake table borders for footnote separators.
+    kwargs: dict[str, Any] = {"clip": clip}
+    if table_strategy is not None:
+        kwargs["strategy"] = table_strategy
+    tabs = page.find_tables(**kwargs)
+    table_bboxes = [fitz.Rect(t.bbox) for t in tabs.tables]
+
     # 2. FOOTER DETECTION (Automatic)
     # We do this immediately so OCR regions don't include footnote text.
     footer_y = None
     if detect_footer:
-        footer_y, guaranteed = detect_footer_y(page, clip)
+        footer_y, guaranteed = detect_footer_y(page, clip, table_bboxes=table_bboxes)
         if footer_y is not None:
             apply_crop = True
             if not guaranteed:
                 # Don't cut through tables
-                kwargs: dict[str, Any] = {"clip": clip}
-                if table_strategy is not None:
-                    kwargs["strategy"] = table_strategy
-                tabs = page.find_tables(**kwargs)
-                for table in tabs.tables:
-                    tx0, ty0, tx1, ty1 = table.bbox
+                for ty0, ty1 in [(t.y0, t.y1) for t in table_bboxes]:
                     if ty0 <= footer_y <= ty1:
                         apply_crop = False
                         break
