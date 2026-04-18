@@ -20,6 +20,12 @@ _DIGIT_ARABIC_RE = re.compile(r"(\d)([\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF])"
 _SPACES_RE = re.compile(r"[ \t]+")
 _NEWLINES_RE = re.compile(r"\n{3,}")
 
+# Arabic letters that do NOT join to the next letter (their final/isolated
+# form is the same regardless of what follows).  Any gap after these letters
+# is naturally present and common inside words; any gap after a letter NOT in
+# this set is suspicious because the letters should visually connect.
+_NON_JOINING_FORWARD = set("اأإآدذرزوؤةىء\u0671")
+
 # ---------------------------------------------------------------------------
 # Public functions
 # ---------------------------------------------------------------------------
@@ -103,6 +109,7 @@ def build_row_text(spans: list[dict]) -> str:
     parts: list[str] = []
     prev_x0: float | None = None
     prev_x1: float | None = None
+    prev_c: str | None = None
     had_space = False
 
     i = 0
@@ -116,12 +123,25 @@ def build_row_text(spans: list[dict]) -> str:
             i += 1
             continue
 
-        if prev_x0 is not None:
+        if prev_x0 is not None and prev_x1 is not None:
             if is_rtl:
                 gap = prev_x0 - x1
             else:
                 gap = x0 - prev_x1
-            if gap > space_threshold or (had_space and gap > 0.5):
+            # If the previous Arabic letter joins forward to this Arabic
+            # letter, they belong to the same word — require a much larger
+            # gap to split them (kashida-stretched connections can otherwise
+            # be wider than space_threshold).
+            if (
+                prev_c is not None
+                and is_arabic(prev_c)
+                and prev_c not in _NON_JOINING_FORWARD
+                and is_arabic(c)
+            ):
+                threshold = space_threshold * 3.0
+            else:
+                threshold = space_threshold
+            if gap > threshold or (had_space and gap > 0.5):
                 parts.append(" ")
             had_space = False
 
@@ -140,11 +160,13 @@ def build_row_text(spans: list[dict]) -> str:
             last = sorted_chars[j - 1]
             prev_x0 = last["bbox"][0]
             prev_x1 = last["bbox"][2]
+            prev_c = last["c"]
             i = j
         else:
             parts.append(c)
             prev_x0 = x0
             prev_x1 = x1
+            prev_c = c
             i += 1
 
     return "".join(parts)
