@@ -35,7 +35,13 @@
       "Bash(rm -rf output/ocr_tests output/default_text output/test_text)",
       "Bash(python -c \"import json,sys; nb=json.load\\(sys.stdin\\); [print\\(o.get\\('text',''\\)\\) for o in nb['cells'][4].get\\('outputs',[]\\) if o.get\\('output_type'\\)=='stream']\")",
       "Bash(uv run python -c ':*)",
-      "Bash(uv run python -c ' *)"
+      "Bash(uv run python -c ' *)",
+      "Bash(git filter-repo *)",
+      "Bash(uv tool *)",
+      "Bash(git-filter-repo *)",
+      "Bash(git tag *)",
+      "Bash(git stash *)",
+      "Bash(git remote *)"
     ]
   }
 }

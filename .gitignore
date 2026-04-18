@@ -15,3 +15,5 @@ download/
 # Test/Preview Images and Notebooks
 *.png
 *.ipynb
+
+.env
