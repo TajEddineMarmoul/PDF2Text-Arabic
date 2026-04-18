@@ -34,7 +34,8 @@
       "Bash(rm -f _ocr_test.py pdf2text_arabic/_ocr_compare.py benchmark_ocr.ipynb test_usage.ipynb test_surya_ocr.ipynb test_surya_csv.ipynb)",
       "Bash(rm -rf output/ocr_tests output/default_text output/test_text)",
       "Bash(python -c \"import json,sys; nb=json.load\\(sys.stdin\\); [print\\(o.get\\('text',''\\)\\) for o in nb['cells'][4].get\\('outputs',[]\\) if o.get\\('output_type'\\)=='stream']\")",
-      "Bash(uv run python -c ':*)"
+      "Bash(uv run python -c ':*)",
+      "Bash(uv run python -c ' *)"
     ]
   }
 }

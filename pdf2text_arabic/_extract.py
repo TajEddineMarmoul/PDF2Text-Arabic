@@ -21,8 +21,6 @@ from ._ocr import (
 from ._tables import extract_tables
 from ._text import build_row_text, clean_arabic, merge_lines_by_y
 
-fitz.TOOLS.set_small_glyph_heights(True)
-
 log = logging.getLogger(__name__)
 
 # Superscript detection: a digit-only span is treated as a footnote
