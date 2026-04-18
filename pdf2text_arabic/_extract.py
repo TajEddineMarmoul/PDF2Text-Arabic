@@ -298,28 +298,24 @@ def extract_page(
         table_strategy: Strategy for PyMuPDF table detection.
         gemini_model: Gemini model id used when ``on_empty="ocr"`` or ``"auto"``.
     """
-    # 1. INITIAL CROP (Manual)
-    # This is the 'No Matter What' area.
+    # 1. INITIAL CROP
     clip = _compute_clip(page.rect, crop_top, crop_bottom, crop_unit)
 
     # 1.5. PRE-EXTRACT TABLES
-    # We need table bounding boxes early to pass to footer detection so it doesn't
-    # mistake table borders for footnote separators.
     kwargs: dict[str, Any] = {"clip": clip}
     if table_strategy is not None:
         kwargs["strategy"] = table_strategy
+        
     tabs = page.find_tables(**kwargs)
     table_bboxes = [fitz.Rect(t.bbox) for t in tabs.tables]
 
-    # 2. FOOTER DETECTION (Automatic)
-    # We do this immediately so OCR regions don't include footnote text.
+    # 2. FOOTER DETECTION
     footer_y = None
     if detect_footer:
         footer_y, guaranteed = detect_footer_y(page, clip)
         if footer_y is not None:
             apply_crop = True
             if not guaranteed:
-                # Don't cut through tables
                 for ty0, ty1 in [(t.y0, t.y1) for t in table_bboxes]:
                     if ty0 <= footer_y <= ty1:
                         apply_crop = False
@@ -328,14 +324,12 @@ def extract_page(
                 clip = fitz.Rect(clip.x0, clip.y0, clip.x1, footer_y - 1)
 
     # 3. CONTENT DETECTION
-    # Now we look for images ONLY within the final clipped/cropped area.
     is_empty_selectable = _is_empty_page(page, clip)
     mixed_regions = _image_only_regions(page, clip)
 
     pieces: list[tuple[float, float, float, float, str]] = []
 
     # 4. SELECTABLE EXTRACTION
-    # Extract digital text from the clipped area.
     if on_empty != "ocr":
         table_entries, t_bboxes = extract_tables(
             page, clip=clip, strategy=table_strategy
@@ -346,20 +340,16 @@ def extract_page(
             pieces.append((y_top, ty1, tx0, tx1, ttext))
 
         # Add Text
-        rawdict: dict[str, Any] = page.get_text("rawdict", clip=clip)  # type: ignore[assignment]
+        rawdict: dict[str, Any] = page.get_text("rawdict", clip=clip)
         body_size = _body_font_size(rawdict, t_bboxes)
 
         for block in rawdict["blocks"]:
-            if "lines" not in block:
-                continue
-
+            if "lines" not in block: continue
             bx0, by0, bx1, by1 = block["bbox"]
 
-            # Skip if inside a detected table
-            if any(
-                tx0 <= (bx0 + bx1) / 2 <= tx1 and ty0 <= (by0 + by1) / 2 <= ty1
-                for tx0, ty0, tx1, ty1 in t_bboxes
-            ):
+            # Skip if inside a table
+            if any(tx0 <= (bx0 + bx1) / 2 <= tx1 and ty0 <= (by0 + by1) / 2 <= ty1
+                   for tx0, ty0, tx1, ty1 in t_bboxes):
                 continue
 
             rows = merge_lines_by_y(block["lines"])
@@ -370,8 +360,6 @@ def extract_page(
                 spans = [s for s in row["spans"] if not _is_superscript(s, body_size)]
                 text = build_row_text(spans)
                 text = clean_arabic(text).strip()
-
-                # Filter out standalone page numbers
                 if text and not _PAGE_NUMBER_RE.match(text):
                     lines_text.append(text)
 
@@ -379,27 +367,23 @@ def extract_page(
                 pieces.append((by0, by1, bx0, bx1, "\n".join(lines_text)))
 
     # 5. OCR EXTRACTION
-    # Only if requested and we found image-only areas.
     if on_empty == "auto":
         if mixed_regions:
-            # Run surgical OCR on any detected image regions
             ocr_results = run_ocr(page, mixed_regions, model=gemini_model)
             for (y_top, ocr_text), region in zip(ocr_results, mixed_regions):
                 pieces.append((y_top, region.y1, region.x0, region.x1, ocr_text))
     elif on_empty == "ocr":
-        # Force full-page OCR of the cropped area regardless of text
         ocr_results = run_ocr(page, [clip], model=gemini_model)
         for y_top, ocr_text in ocr_results:
             pieces.append((y_top, clip.y1, clip.x0, clip.x1, ocr_text))
 
-    # 6. FINAL RECONSTRUCTION (SMART BANDING)
-    if not pieces:
-        return ""
+    # 6. FINAL RECONSTRUCTION
+    if not pieces: return ""
 
     w = clip.width
     mid_x = clip.x0 + w / 2
 
-    # Calculate Gutter using pure Python (no numpy dependency)
+    # Calculate Gutter
     density_map = [0] * (int(w) + 1)
     for p in pieces:
         _, _, px0, px1, _ = p
@@ -412,80 +396,48 @@ def extract_page(
     search_start = int(w * 0.3)
     search_end = int(w * 0.7)
     middle_density = density_map[search_start:search_end]
-
-    best_gap_start = 0
-    best_gap_len = 0
-    current_gap_start = -1
-
+    best_gap_start, best_gap_len, current_gap_start = 0, 0, -1
     for i, val in enumerate(middle_density):
         if val == 0:
             if current_gap_start == -1: current_gap_start = i
-        else:
-            if current_gap_start != -1:
-                gap_len = i - current_gap_start
-                if gap_len > best_gap_len:
-                    best_gap_len = gap_len
-                    best_gap_start = current_gap_start
-                current_gap_start = -1
+        elif current_gap_start != -1:
+            gap_len = i - current_gap_start
+            if gap_len > best_gap_len: best_gap_len, best_gap_start = gap_len, current_gap_start
+            current_gap_start = -1
     if current_gap_start != -1 and (len(middle_density) - current_gap_start) > best_gap_len:
-        best_gap_start = current_gap_start
         best_gap_len = len(middle_density) - current_gap_start
-
+        best_gap_start = current_gap_start
     if best_gap_len >= 10:
         mid_x = clip.x0 + search_start + best_gap_start + (best_gap_len / 2)
 
-    spanning_blocks = []
-    col_blocks = []
-
+    spanning_blocks, col_blocks = [], []
     for p in pieces:
-        _, _, px0, px1, text = p
-        if text.startswith("---"):
-            spanning_blocks.append(p)
-            continue
-            
+        py0, py1, px0, px1, text = p
         bw = px1 - px0
         center_x = (px0 + px1) / 2
-        
-        is_spanning = False
-        if bw > 0.55 * w:
-            is_spanning = True
-        elif px0 < mid_x - 10 and px1 > mid_x + 10 and bw > 0.15 * w:
-            is_spanning = True
-        elif abs(center_x - mid_x) < 0.05 * w and bw > 0.15 * w:
-            is_spanning = True
-            
-        if is_spanning:
-            spanning_blocks.append(p)
-        else:
-            col_blocks.append(p)
+        is_spanning = bw > 0.55 * w or (px0 < mid_x - 10 and px1 > mid_x + 10 and bw > 0.15 * w)
+        if is_spanning: spanning_blocks.append(p)
+        else: col_blocks.append(p)
 
-    # Sort spans by Y
     spanning_blocks.sort(key=lambda p: p[0])
-
     merged_spans = []
     for p in spanning_blocks:
         y0, y1, _, _, _ = p
-        if not merged_spans:
-            merged_spans.append([y0, y1, [p]])
+        if not merged_spans: merged_spans.append([y0, y1, [p]])
         else:
             last = merged_spans[-1]
             if y0 <= last[1] + 10:
                 last[1] = max(last[1], y1)
                 last[2].append(p)
-            else:
-                merged_spans.append([y0, y1, [p]])
+            else: merged_spans.append([y0, y1, [p]])
 
-    all_bands = []
-    current_y = clip.y0
+    all_bands, current_y = [], clip.y0
     for span in merged_spans:
         sy0, sy1, sblocks = span
-        if sy0 > current_y:
-            all_bands.append({'type': 'columns', 'y0': current_y, 'y1': sy0, 'blocks': []})
+        if sy0 > current_y: all_bands.append({'type': 'columns', 'y0': current_y, 'y1': sy0, 'blocks': []})
         all_bands.append({'type': 'spanning', 'y0': sy0, 'y1': sy1, 'blocks': sblocks})
         current_y = sy1
-
-    if current_y < clip.y1:
-        all_bands.append({'type': 'columns', 'y0': current_y, 'y1': clip.y1, 'blocks': []})
+    if current_y < clip.y1: all_bands.append({'type': 'columns', 'y0': current_y, 'y1': clip.y1, 'blocks': []})
 
     for p in col_blocks:
         py0, py1, _, _, _ = p
@@ -510,16 +462,12 @@ def extract_page(
             band['blocks'].sort(key=lambda b: b[0])
             final_reading_order.extend(band['blocks'])
         elif band['type'] == 'columns':
-            right_blocks = []
-            left_blocks = []
+            rb, lb = [], []
             for b in band['blocks']:
-                center_x = (b[2] + b[3]) / 2
-                if center_x > mid_x: right_blocks.append(b)
-                else: left_blocks.append(b)
-            right_blocks.sort(key=lambda b: b[0])
-            left_blocks.sort(key=lambda b: b[0])
-            final_reading_order.extend(right_blocks)
-            final_reading_order.extend(left_blocks)
+                if (b[2] + b[3]) / 2 > mid_x: rb.append(b)
+                else: lb.append(b)
+            rb.sort(key=lambda b: b[0]); lb.sort(key=lambda b: b[0])
+            final_reading_order.extend(rb); final_reading_order.extend(lb)
 
     return "\n\n".join(text for *_, text in final_reading_order)
 
@@ -535,31 +483,9 @@ def extract_pdf(
     table_strategy: str | None = None,
     gemini_model: str = DEFAULT_GEMINI_MODEL,
 ) -> str:
-    """Extract Arabic text from a PDF file.
-
-    Args:
-        pdf_path: Path to the PDF file.
-        crop_top: Amount to crop from the top of every page.
-        crop_bottom: Amount to crop from the bottom of every page.
-        crop_unit: ``"px"`` for points/pixels, ``"pct"`` for percentage.
-        detect_footer: Auto-detect footnote separator lines and crop below.
-        on_empty: How to handle image-only pages (``"ignore"``, ``"warn"``,
-            ``"auto"``, or ``"ocr"``).
-        table_strategy: Strategy for PyMuPDF table detection.
-        gemini_model: Gemini model id used when ``on_empty="ocr"`` or ``"auto"``
-            (requires ``GEMINI_API_KEY`` in environment or .env).
-
-    Returns:
-        The full extracted text with pages separated by double newlines.
-    """
     return extract_pdf_result(
-        pdf_path,
-        crop_top=crop_top,
-        crop_bottom=crop_bottom,
-        crop_unit=crop_unit,
-        detect_footer=detect_footer,
-        on_empty=on_empty,
-        table_strategy=table_strategy,
+        pdf_path, crop_top=crop_top, crop_bottom=crop_bottom, crop_unit=crop_unit,
+        detect_footer=detect_footer, on_empty=on_empty, table_strategy=table_strategy,
         gemini_model=gemini_model,
     ).text
 
@@ -575,35 +501,22 @@ def extract_pdf_result(
     table_strategy: str | None = None,
     gemini_model: str = DEFAULT_GEMINI_MODEL,
 ) -> ExtractionResult:
-    """Extract Arabic text and return structured metadata.
-
-    This is the preferred API for AI agents and automation because it includes
-    predictable metadata in addition to plain text.
-    """
     path = Path(pdf_path)
     if not path.exists() or not path.is_file():
         raise InvalidPDFPathError(f"PDF path not found: {pdf_path}")
 
     if on_empty in ("ocr", "auto"):
         if not gemini_available():
-            raise OCRUnavailableError(
-                "OCR requested (on_empty='ocr' or 'auto') but 'google-genai' is not installed. "
-                "Install with: pip install google-genai python-dotenv"
-            )
+            raise OCRUnavailableError("OCR requested but 'google-genai' not installed.")
         if not load_gemini_api_key():
-            raise OCRUnavailableError(
-                "GEMINI_API_KEY is not set. Add it to your .env or environment."
-            )
+            raise OCRUnavailableError("GEMINI_API_KEY is not set.")
 
     try:
         doc = fitz.open(pdf_path)
     except Exception as exc:
         raise InvalidPDFPathError(f"Could not open PDF: {pdf_path}") from exc
 
-    pages: list[str] = []
-    empty_pages: list[int] = []
-    mixed_pages: list[int] = []
-    warnings: list[str] = []
+    pages, empty_pages, mixed_pages, warnings = [], [], [], []
 
     for page in doc:
         page_no = _page_number(page)
@@ -612,34 +525,22 @@ def extract_pdf_result(
         is_mixed = (not is_empty) and _has_content_images(page, clip)
 
         text = extract_page(
-            page,
-            crop_top=crop_top,
-            crop_bottom=crop_bottom,
-            crop_unit=crop_unit,
-            detect_footer=detect_footer,
-            on_empty=on_empty,
-            table_strategy=table_strategy,
+            page, crop_top=crop_top, crop_bottom=crop_bottom, crop_unit=crop_unit,
+            detect_footer=detect_footer, on_empty=on_empty, table_strategy=table_strategy,
             gemini_model=gemini_model,
         )
 
         if is_mixed:
-            mixed_pages.append(page_no)
-            warnings.append(f"mixed_page:{page_no}")
+            mixed_pages.append(page_no); warnings.append(f"mixed_page:{page_no}")
 
-        if text.strip():
-            pages.append(text)
+        if text.strip(): pages.append(text)
         elif not is_mixed:
-            empty_pages.append(page_no)
-            warnings.append(f"empty_page:{page_no}")
+            empty_pages.append(page_no); warnings.append(f"empty_page:{page_no}")
 
     pages_total = len(doc)
     doc.close()
 
     return ExtractionResult(
-        text="\n\n".join(pages),
-        pages_total=pages_total,
-        pages_with_text=len(pages),
-        empty_pages=empty_pages,
-        mixed_pages=mixed_pages,
-        warnings=warnings,
+        text="\n\n".join(pages), pages_total=pages_total, pages_with_text=len(pages),
+        empty_pages=empty_pages, mixed_pages=mixed_pages, warnings=warnings,
     )

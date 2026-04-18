@@ -41,7 +41,8 @@
       "Bash(git-filter-repo *)",
       "Bash(git tag *)",
       "Bash(git stash *)",
-      "Bash(git remote *)"
+      "Bash(git remote *)",
+      "Bash(uv run *)"
     ]
   }
 }

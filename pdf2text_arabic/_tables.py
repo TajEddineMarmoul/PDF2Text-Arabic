@@ -110,9 +110,16 @@ def extract_tables(
     if not tabs.tables:
         return [], []
 
+    # Drop false positives from PyMuPDF's line-based detector: bordered
+    # header strips and column frames come back as 1-row "tables" with a
+    # single prose cell. A real table has ≥ 2 rows.
+    candidates = [t for t in tabs.tables if len(t.rows) >= 2]
+    if not candidates:
+        return [], []
+
     results: list[tuple[float, str]] = []
     bboxes: list[tuple] = []
-    for table in tabs.tables:
+    for table in candidates:
         bboxes.append(table.bbox)
 
         raw_extract = table.extract()
