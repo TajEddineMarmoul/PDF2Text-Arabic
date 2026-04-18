@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 import re
 import tempfile
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 import fitz
 
@@ -268,6 +268,125 @@ def get_capabilities() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Reading-order logic (shared with the debug visualization)
+# ---------------------------------------------------------------------------
+
+
+def order_reading_rtl(
+    items: list,
+    clip: fitz.Rect,
+    *,
+    bbox: Callable[[Any], fitz.Rect],
+) -> list:
+    """Sort *items* in RTL two-column reading order.
+
+    The page is split into horizontal bands by full-width ("spanning") items.
+    Within each columns band, items are grouped by column and the right column
+    is emitted before the left (Arabic reading order).
+
+    *items* is opaque; *bbox* is a callable returning a ``fitz.Rect`` for each
+    item.  Returned list contains the same items in reading order.
+
+    Used by both the extractor and the debug visualization so a single source
+    of truth drives both.
+    """
+    w = clip.width
+    mid_x = clip.x0 + w / 2
+
+    # Gutter detection: vote where narrow blocks sit, pick the biggest empty
+    # strip in the middle 40% as the column divider.
+    density_map = [0] * (int(w) + 1)
+    for it in items:
+        r = bbox(it)
+        if (r.x1 - r.x0) > (w * 0.6):
+            continue
+        s = int(max(0, r.x0 - clip.x0))
+        e = int(min(w, r.x1 - clip.x0))
+        for i in range(s, e):
+            density_map[i] += 1
+    search_start = int(w * 0.3)
+    search_end = int(w * 0.7)
+    middle = density_map[search_start:search_end]
+    best_start, best_len, cur = 0, 0, -1
+    for i, val in enumerate(middle):
+        if val == 0:
+            if cur == -1:
+                cur = i
+        elif cur != -1:
+            gap = i - cur
+            if gap > best_len:
+                best_len, best_start = gap, cur
+            cur = -1
+    if cur != -1 and (len(middle) - cur) > best_len:
+        best_len = len(middle) - cur
+        best_start = cur
+    if best_len >= 10:
+        mid_x = clip.x0 + search_start + best_start + (best_len / 2)
+
+    spanning, cols = [], []
+    for it in items:
+        r = bbox(it)
+        bw = r.x1 - r.x0
+        is_span = bw > 0.55 * w or (
+            r.x0 < mid_x - 10 and r.x1 > mid_x + 10 and bw > 0.15 * w
+        )
+        (spanning if is_span else cols).append(it)
+
+    spanning.sort(key=lambda x: bbox(x).y0)
+    merged: list[dict[str, Any]] = []
+    for it in spanning:
+        r = bbox(it)
+        if merged and r.y0 <= merged[-1]["y1"] + 10:
+            merged[-1]["y1"] = max(merged[-1]["y1"], r.y1)
+            merged[-1]["blocks"].append(it)
+        else:
+            merged.append({"y0": r.y0, "y1": r.y1, "blocks": [it]})
+
+    bands: list[dict[str, Any]] = []
+    cur_y = clip.y0
+    for s in merged:
+        if s["y0"] > cur_y:
+            bands.append({"type": "columns", "y0": cur_y, "y1": s["y0"], "blocks": []})
+        bands.append({"type": "spanning", "y0": s["y0"], "y1": s["y1"], "blocks": s["blocks"]})
+        cur_y = s["y1"]
+    if cur_y < clip.y1:
+        bands.append({"type": "columns", "y0": cur_y, "y1": clip.y1, "blocks": []})
+
+    for it in cols:
+        r = bbox(it)
+        cy = (r.y0 + r.y1) / 2
+        assigned = False
+        for band in bands:
+            if band["type"] == "columns" and band["y0"] <= cy <= band["y1"]:
+                band["blocks"].append(it)
+                assigned = True
+                break
+        if not assigned:
+            for band in bands:
+                if band["type"] == "columns" and band["y0"] - 10 <= cy <= band["y1"] + 10:
+                    band["blocks"].append(it)
+                    break
+
+    ordered: list = []
+    for band in bands:
+        if not band["blocks"]:
+            continue
+        if band["type"] == "spanning":
+            band["blocks"].sort(key=lambda x: bbox(x).y0)
+            ordered.extend(band["blocks"])
+        else:
+            rb, lb = [], []
+            for x in band["blocks"]:
+                r = bbox(x)
+                (rb if (r.x0 + r.x1) / 2 > mid_x else lb).append(x)
+            rb.sort(key=lambda x: bbox(x).y0)
+            lb.sort(key=lambda x: bbox(x).y0)
+            ordered.extend(rb)
+            ordered.extend(lb)
+    return ordered
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -380,94 +499,11 @@ def extract_page(
     # 6. FINAL RECONSTRUCTION
     if not pieces: return ""
 
-    w = clip.width
-    mid_x = clip.x0 + w / 2
-
-    # Calculate Gutter
-    density_map = [0] * (int(w) + 1)
-    for p in pieces:
-        _, _, px0, px1, _ = p
-        if (px1 - px0) > (w * 0.6): continue
-        start_idx = int(max(0, px0 - clip.x0))
-        end_idx = int(min(w, px1 - clip.x0))
-        for i in range(start_idx, end_idx):
-            density_map[i] += 1
-
-    search_start = int(w * 0.3)
-    search_end = int(w * 0.7)
-    middle_density = density_map[search_start:search_end]
-    best_gap_start, best_gap_len, current_gap_start = 0, 0, -1
-    for i, val in enumerate(middle_density):
-        if val == 0:
-            if current_gap_start == -1: current_gap_start = i
-        elif current_gap_start != -1:
-            gap_len = i - current_gap_start
-            if gap_len > best_gap_len: best_gap_len, best_gap_start = gap_len, current_gap_start
-            current_gap_start = -1
-    if current_gap_start != -1 and (len(middle_density) - current_gap_start) > best_gap_len:
-        best_gap_len = len(middle_density) - current_gap_start
-        best_gap_start = current_gap_start
-    if best_gap_len >= 10:
-        mid_x = clip.x0 + search_start + best_gap_start + (best_gap_len / 2)
-
-    spanning_blocks, col_blocks = [], []
-    for p in pieces:
-        py0, py1, px0, px1, text = p
-        bw = px1 - px0
-        center_x = (px0 + px1) / 2
-        is_spanning = bw > 0.55 * w or (px0 < mid_x - 10 and px1 > mid_x + 10 and bw > 0.15 * w)
-        if is_spanning: spanning_blocks.append(p)
-        else: col_blocks.append(p)
-
-    spanning_blocks.sort(key=lambda p: p[0])
-    merged_spans = []
-    for p in spanning_blocks:
-        y0, y1, _, _, _ = p
-        if not merged_spans: merged_spans.append([y0, y1, [p]])
-        else:
-            last = merged_spans[-1]
-            if y0 <= last[1] + 10:
-                last[1] = max(last[1], y1)
-                last[2].append(p)
-            else: merged_spans.append([y0, y1, [p]])
-
-    all_bands, current_y = [], clip.y0
-    for span in merged_spans:
-        sy0, sy1, sblocks = span
-        if sy0 > current_y: all_bands.append({'type': 'columns', 'y0': current_y, 'y1': sy0, 'blocks': []})
-        all_bands.append({'type': 'spanning', 'y0': sy0, 'y1': sy1, 'blocks': sblocks})
-        current_y = sy1
-    if current_y < clip.y1: all_bands.append({'type': 'columns', 'y0': current_y, 'y1': clip.y1, 'blocks': []})
-
-    for p in col_blocks:
-        py0, py1, _, _, _ = p
-        p_center_y = (py0 + py1) / 2
-        assigned = False
-        for band in all_bands:
-            if band['type'] == 'columns' and band['y0'] <= p_center_y <= band['y1']:
-                band['blocks'].append(p)
-                assigned = True
-                break
-        if not assigned:
-            for band in all_bands:
-                if band['type'] == 'columns' and band['y0'] - 10 <= p_center_y <= band['y1'] + 10:
-                    band['blocks'].append(p)
-                    assigned = True
-                    break
-
-    final_reading_order = []
-    for band in all_bands:
-        if not band['blocks']: continue
-        if band['type'] == 'spanning':
-            band['blocks'].sort(key=lambda b: b[0])
-            final_reading_order.extend(band['blocks'])
-        elif band['type'] == 'columns':
-            rb, lb = [], []
-            for b in band['blocks']:
-                if (b[2] + b[3]) / 2 > mid_x: rb.append(b)
-                else: lb.append(b)
-            rb.sort(key=lambda b: b[0]); lb.sort(key=lambda b: b[0])
-            final_reading_order.extend(rb); final_reading_order.extend(lb)
+    final_reading_order = order_reading_rtl(
+        pieces,
+        clip,
+        bbox=lambda p: fitz.Rect(p[2], p[0], p[3], p[1]),
+    )
 
     return "\n\n".join(text for *_, text in final_reading_order)
 
