@@ -70,7 +70,7 @@ class OCRUnavailableError(PDFArabicError):
     """
 
 
-@dataclass(slots=True)
+@dataclass
 class ExtractionResult:
     """Structured extraction result for AI and downstream automation.
 
@@ -317,7 +317,7 @@ def extract_page(
     # We do this immediately so OCR regions don't include footnote text.
     footer_y = None
     if detect_footer:
-        footer_y, guaranteed = detect_footer_y(page, clip, table_bboxes=table_bboxes)
+        footer_y, guaranteed = detect_footer_y(page, clip)
         if footer_y is not None:
             apply_crop = True
             if not guaranteed:
@@ -334,18 +334,18 @@ def extract_page(
     is_empty_selectable = _is_empty_page(page, clip)
     mixed_regions = _image_only_regions(page, clip)
 
-    pieces: list[tuple[float, float, float, str]] = []
+    pieces: list[tuple[float, float, float, float, str]] = []
 
     # 4. SELECTABLE EXTRACTION
     # Extract digital text from the clipped area.
-    if on_empty != "ocr" and (on_empty == "auto" or not is_empty_selectable):
+    if on_empty != "ocr":
         table_entries, t_bboxes = extract_tables(
             page, clip=clip, strategy=table_strategy
         )
 
         # Add Tables
         for (y_top, ttext), (tx0, ty0, tx1, ty1) in zip(table_entries, t_bboxes):
-            pieces.append((y_top, tx0, tx1, ttext))
+            pieces.append((y_top, ty1, tx0, tx1, ttext))
 
         # Add Text
         rawdict: dict[str, Any] = page.get_text("rawdict", clip=clip)  # type: ignore[assignment]
@@ -378,7 +378,7 @@ def extract_page(
                     lines_text.append(text)
 
             if lines_text:
-                pieces.append((by0, bx0, bx1, "\n".join(lines_text)))
+                pieces.append((by0, by1, bx0, bx1, "\n".join(lines_text)))
 
     # 5. OCR EXTRACTION
     # Only if requested and we found image-only areas.
@@ -387,47 +387,143 @@ def extract_page(
             # Run surgical OCR on any detected image regions
             ocr_results = run_ocr(page, mixed_regions, model=gemini_model)
             for (y_top, ocr_text), region in zip(ocr_results, mixed_regions):
-                pieces.append((y_top, region.x0, region.x1, ocr_text))
+                pieces.append((y_top, region.y1, region.x0, region.x1, ocr_text))
     elif on_empty == "ocr":
         # Force full-page OCR of the cropped area regardless of text
         ocr_results = run_ocr(page, [clip], model=gemini_model)
         for y_top, ocr_text in ocr_results:
-            pieces.append((y_top, clip.x0, clip.x1, ocr_text))
+            pieces.append((y_top, clip.y1, clip.x0, clip.x1, ocr_text))
 
-    # 6. FINAL RECONSTRUCTION
-    mid_x = clip.x0 + clip.width / 2
-    left_count = 0
-    right_count = 0
-    span_count = 0
+    # 6. FINAL RECONSTRUCTION (SMART BANDING)
+    if not pieces:
+        return ""
 
-    for _, x0, x1, text in pieces:
-        if text.startswith("---"): 
+    w = clip.width
+    mid_x = clip.x0 + w / 2
+
+    # Calculate Gutter using pure Python (no numpy dependency)
+    density_map = [0] * (int(w) + 1)
+    for p in pieces:
+        _, _, px0, px1, _ = p
+        if (px1 - px0) > (w * 0.6): continue
+        start_idx = int(max(0, px0 - clip.x0))
+        end_idx = int(min(w, px1 - clip.x0))
+        for i in range(start_idx, end_idx):
+            density_map[i] += 1
+
+    search_start = int(w * 0.3)
+    search_end = int(w * 0.7)
+    middle_density = density_map[search_start:search_end]
+
+    best_gap_start = 0
+    best_gap_len = 0
+    current_gap_start = -1
+
+    for i, val in enumerate(middle_density):
+        if val == 0:
+            if current_gap_start == -1: current_gap_start = i
+        else:
+            if current_gap_start != -1:
+                gap_len = i - current_gap_start
+                if gap_len > best_gap_len:
+                    best_gap_len = gap_len
+                    best_gap_start = current_gap_start
+                current_gap_start = -1
+    if current_gap_start != -1 and (len(middle_density) - current_gap_start) > best_gap_len:
+        best_gap_start = current_gap_start
+        best_gap_len = len(middle_density) - current_gap_start
+
+    if best_gap_len >= 10:
+        mid_x = clip.x0 + search_start + best_gap_start + (best_gap_len / 2)
+
+    spanning_blocks = []
+    col_blocks = []
+
+    for p in pieces:
+        _, _, px0, px1, text = p
+        if text.startswith("---"):
+            spanning_blocks.append(p)
             continue
-        width = x1 - x0
-        if width > clip.width * 0.6:
-            span_count += 1
-        elif x1 < mid_x + 20:
-            left_count += 1
-        elif x0 > mid_x - 20:
-            right_count += 1
+            
+        bw = px1 - px0
+        center_x = (px0 + px1) / 2
+        
+        is_spanning = False
+        if bw > 0.55 * w:
+            is_spanning = True
+        elif px0 < mid_x - 10 and px1 > mid_x + 10 and bw > 0.15 * w:
+            is_spanning = True
+        elif abs(center_x - mid_x) < 0.05 * w and bw > 0.15 * w:
+            is_spanning = True
+            
+        if is_spanning:
+            spanning_blocks.append(p)
+        else:
+            col_blocks.append(p)
 
-    is_two_column = (left_count > 2 and right_count > 2 and span_count < max(left_count, right_count))
+    # Sort spans by Y
+    spanning_blocks.sort(key=lambda p: p[0])
 
-    if is_two_column:
-        def sort_key(p):
-            y_top, x0, x1, text = p
-            if y_top < clip.y0 + clip.height * 0.2 and (x1 - x0 > clip.width * 0.4):
-                return (0, y_top)
-            if x0 > mid_x - 20:
-                col = 1 # Right
+    merged_spans = []
+    for p in spanning_blocks:
+        y0, y1, _, _, _ = p
+        if not merged_spans:
+            merged_spans.append([y0, y1, [p]])
+        else:
+            last = merged_spans[-1]
+            if y0 <= last[1] + 10:
+                last[1] = max(last[1], y1)
+                last[2].append(p)
             else:
-                col = 2 # Left
-            return (col, y_top)
-        pieces.sort(key=sort_key)
-    else:
-        pieces.sort(key=lambda p: p[0])
+                merged_spans.append([y0, y1, [p]])
 
-    return "\n\n".join(text for *_, text in pieces)
+    all_bands = []
+    current_y = clip.y0
+    for span in merged_spans:
+        sy0, sy1, sblocks = span
+        if sy0 > current_y:
+            all_bands.append({'type': 'columns', 'y0': current_y, 'y1': sy0, 'blocks': []})
+        all_bands.append({'type': 'spanning', 'y0': sy0, 'y1': sy1, 'blocks': sblocks})
+        current_y = sy1
+
+    if current_y < clip.y1:
+        all_bands.append({'type': 'columns', 'y0': current_y, 'y1': clip.y1, 'blocks': []})
+
+    for p in col_blocks:
+        py0, py1, _, _, _ = p
+        p_center_y = (py0 + py1) / 2
+        assigned = False
+        for band in all_bands:
+            if band['type'] == 'columns' and band['y0'] <= p_center_y <= band['y1']:
+                band['blocks'].append(p)
+                assigned = True
+                break
+        if not assigned:
+            for band in all_bands:
+                if band['type'] == 'columns' and band['y0'] - 10 <= p_center_y <= band['y1'] + 10:
+                    band['blocks'].append(p)
+                    assigned = True
+                    break
+
+    final_reading_order = []
+    for band in all_bands:
+        if not band['blocks']: continue
+        if band['type'] == 'spanning':
+            band['blocks'].sort(key=lambda b: b[0])
+            final_reading_order.extend(band['blocks'])
+        elif band['type'] == 'columns':
+            right_blocks = []
+            left_blocks = []
+            for b in band['blocks']:
+                center_x = (b[2] + b[3]) / 2
+                if center_x > mid_x: right_blocks.append(b)
+                else: left_blocks.append(b)
+            right_blocks.sort(key=lambda b: b[0])
+            left_blocks.sort(key=lambda b: b[0])
+            final_reading_order.extend(right_blocks)
+            final_reading_order.extend(left_blocks)
+
+    return "\n\n".join(text for *_, text in final_reading_order)
 
 
 def extract_pdf(
