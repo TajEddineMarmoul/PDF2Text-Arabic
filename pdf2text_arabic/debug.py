@@ -46,7 +46,6 @@ def draw_page_layout(
         * orange  — full-width (spanning) text blocks
         * green   — right-column text
         * red     — left-column text
-        * grey    — filtered page numbers (PN)
 
     When ``crop_top``/``crop_bottom`` are used (manual or auto), the trimmed
     header/footer bands are shaded grey so you can preview what will be dropped.
@@ -66,27 +65,33 @@ def draw_page_layout(
         footer_band = fitz.Rect(page.rect.x0, clip.y1, page.rect.x1, page.rect.y1)
         page.draw_rect(footer_band, color=(0.6, 0.6, 0.6), fill=(0.85, 0.85, 0.85), fill_opacity=0.5, width=0.5)
 
-    # Shade footer region
-    if detect_footer:
-        footer_y, guaranteed = detect_footer_y(page, clip)
-        if footer_y is not None:
-            # We don't adjust the clip here (so we see the blocks), but we shade the area
-            f_rect = fitz.Rect(clip.x0, footer_y, clip.x1, clip.y1)
-            page.draw_rect(f_rect, color=(0.2, 0.5, 0.9), fill=(0.7, 0.85, 1.0), fill_opacity=0.3, width=0.5)
-
     # 1. Detection — same primitives the extractor uses
     _, table_bbox_tuples = extract_tables(page, clip=clip)
     table_bboxes = [fitz.Rect(t) for t in table_bbox_tuples]
     ocr_regions = _image_only_regions(page, clip)
 
-    raw: dict[str, Any] = page.get_text("rawdict")  # type: ignore[assignment]
+    # Shade footer region and adjust clip
+    if detect_footer:
+        footer_y, guaranteed = detect_footer_y(page, clip)
+        if footer_y is not None:
+            apply_crop = True
+            if not guaranteed:
+                for ty0, ty1 in [(t.y0, t.y1) for t in table_bboxes]:
+                    if ty0 <= footer_y <= ty1:
+                        apply_crop = False
+                        break
+            if apply_crop:
+                f_rect = fitz.Rect(clip.x0, footer_y, clip.x1, clip.y1)
+                page.draw_rect(f_rect, color=(0.2, 0.5, 0.9), fill=(0.7, 0.85, 1.0), fill_opacity=0.3, width=0.5)
+                clip = fitz.Rect(clip.x0, clip.y0, clip.x1, footer_y - 1)
+
+    raw: dict[str, Any] = page.get_text("rawdict", clip=clip)  # type: ignore[assignment]
     
     # Define zones for page number detection relative to the page
     page_num_bottom_zone_y = page.rect.y1 - page.rect.height * _PAGE_NUMBER_BOTTOM_PCT
     page_num_top_zone_y = page.rect.y0 + page.rect.height * _PAGE_NUMBER_BOTTOM_PCT
     
     text_blocks: list[dict[str, Any]] = []
-    page_num_blocks: list[dict[str, Any]] = []
 
     for b in raw["blocks"]:
         if "lines" not in b:
@@ -99,11 +104,28 @@ def draw_page_layout(
             continue
         if any(r.intersects(o_rect) for o_rect in ocr_regions):
             continue
+            
+        # Match extract_page: ignore standalone page numbers
+        block_text = "".join(
+            c.get("c", "")
+            for line in b.get("lines", [])
+            for span in line.get("spans", [])
+            for c in span.get("chars", [])
+        ).strip()
+        
+        if (
+            block_text
+            and cy >= page_num_bottom_zone_y
+            and all(
+                _is_page_number_text("".join(c.get("c", "") for c in span.get("chars", [])).strip())
+                for line in b.get("lines", [])
+                for span in line.get("spans", [])
+                if "".join(c.get("c", "") for c in span.get("chars", [])).strip()
+            )
+        ):
+            continue
 
-        if _is_page_number_block(b, page_num_top_zone_y, page_num_bottom_zone_y):
-            page_num_blocks.append(b)
-        else:
-            text_blocks.append(b)
+        text_blocks.append(b)
 
     # 2. Unified item list
     all_items: list[dict[str, Any]] = []
@@ -111,8 +133,6 @@ def draw_page_layout(
         all_items.append({"bbox": t, "type": "TABLE"})
     for r in ocr_regions:
         all_items.append({"bbox": r, "type": "IMAGE"})
-    for b in page_num_blocks:
-        all_items.append({"bbox": fitz.Rect(b["bbox"]), "type": "PAGE_NUM"})
     for b in text_blocks:
         all_items.append({"bbox": fitz.Rect(b["bbox"]), "type": "TEXT"})
 
@@ -128,8 +148,6 @@ def draw_page_layout(
             color = (0, 0, 1)
         elif it["type"] == "IMAGE":
             color = (1, 0, 1)
-        elif it["type"] == "PAGE_NUM":
-            color = (0.6, 0.6, 0.6)
         elif r.width > 0.55 * w:
             color = (1, 0.5, 0)
         elif (r.x0 + r.x1) / 2 > mid_x:
@@ -139,9 +157,7 @@ def draw_page_layout(
 
         page.draw_rect(r, color=color, width=2)
 
-        if it["type"] == "PAGE_NUM":
-            label = "PN"
-        elif it["type"] != "TEXT":
+        if it["type"] != "TEXT":
             label = f"{it['type'][0]}{i + 1}"
         else:
             label = str(i + 1)

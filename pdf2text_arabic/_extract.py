@@ -195,7 +195,8 @@ def _is_page_number_block(block: dict[str, Any], top_zone_y: float, bottom_zone_
 def _auto_detect_page_number_y(page: fitz.Page, side: Literal["top", "bottom"]) -> float | None:
     """Scan the top or bottom margin of the page for a page number text.
 
-    Returns the boundary Y coordinate (plus a 5px margin) or None if not found.
+    Returns the boundary Y coordinate (plus a 5px margin) if the outermost
+    text block in the margin is a page number, else None.
     """
     rect = page.rect
     h = rect.height
@@ -203,22 +204,52 @@ def _auto_detect_page_number_y(page: fitz.Page, side: Literal["top", "bottom"]) 
 
     if side == "top":
         clip = fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y0 + margin)
-        top_zone = rect.y0 + margin
-        bottom_zone = rect.y1  # No bottom margin for this check
     else:
         clip = fitz.Rect(rect.x0, rect.y1 - margin, rect.x1, rect.y1)
-        top_zone = rect.y0  # No top margin for this check
-        bottom_zone = rect.y1 - margin
 
-    # Search for blocks in this margin
+    # Search for text blocks in this margin
     rawdict = page.get_text("rawdict", clip=clip)
+    valid_blocks = []
+    
     for block in rawdict.get("blocks", []):
-        if _is_page_number_block(block, top_zone, bottom_zone):
-            bx0, by0, bx1, by1 = block["bbox"]
-            if side == "top":
-                return by1 + 5  # Crop below the top page number
-            else:
-                return by0 - 5  # Crop above the bottom page number
+        if "lines" not in block:
+            continue
+        
+        block_text = "".join(
+            c.get("c", "")
+            for line in block.get("lines", [])
+            for span in line.get("spans", [])
+            for c in span.get("chars", [])
+        ).strip()
+
+        if not block_text:
+            continue
+            
+        r = fitz.Rect(block["bbox"])
+        cy = (r.y0 + r.y1) / 2
+        valid_blocks.append({
+            "text": block_text,
+            "cy": cy,
+            "bbox": block["bbox"]
+        })
+
+    if not valid_blocks:
+        return None
+
+    # Sort blocks vertically
+    valid_blocks.sort(key=lambda x: x["cy"])
+
+    if side == "top":
+        # The topmost block must be the page number
+        first_block = valid_blocks[0]
+        if _is_page_number_text(first_block["text"]):
+            return first_block["bbox"][3] + 5  # by1 + 5
+    else:
+        # The bottommost block must be the page number
+        last_block = valid_blocks[-1]
+        if _is_page_number_text(last_block["text"]):
+            return last_block["bbox"][1] - 5  # by0 - 5
+
     return None
 
 
