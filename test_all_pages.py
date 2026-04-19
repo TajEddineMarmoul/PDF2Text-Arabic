@@ -8,50 +8,32 @@ from pdf2text_arabic._extract import (
 )
 from pdf2text_arabic._tables import extract_tables
 
-OUT_DIR = "output/edge_cases"
-os.makedirs(OUT_DIR, exist_ok=True)
+BASE_OUT_DIR = "output/all_pages"
+os.makedirs(BASE_OUT_DIR, exist_ok=True)
 
-# Clear old images
-for f in glob.glob(f"{OUT_DIR}/*.png"):
-    os.remove(f)
-
-def test_pdf_edge_cases(pdf_path):
-    doc = fitz.open(pdf_path)
+def process_full_pdf(pdf_path):
     pdf_name = os.path.basename(pdf_path).replace('.pdf', '')
-    print(f"\nAnalyzing: {pdf_name}")
+    pdf_out_dir = os.path.join(BASE_OUT_DIR, pdf_name)
+    os.makedirs(pdf_out_dir, exist_ok=True)
     
-    # Test first 3 pages and the last page
-    pages_to_test = list(set([0, 1, 2, len(doc)-1]))
-    pages_to_test.sort()
+    print(f"\nProcessing Entire PDF: {pdf_name}")
+    doc = fitz.open(pdf_path)
     
     table_state = None
     for p_num in range(len(doc)):
         page = doc[p_num]
-
+        
         # Apply current best defaults
         clip = _compute_clip(page, crop_top=8.0, crop_bottom=4.5, crop_unit="pct", auto_crop_top=True, auto_crop_bottom=True)
-
+        
         # 1. Detect Tables (carrying state)
         _, table_bbox_tuples, table_state = extract_tables(page, clip=clip, prev_table_state=table_state)
-
-        # Only draw and log if it's one of our targeted pages
-        if p_num not in pages_to_test:
-            continue
-
-        top_y = clip.y0
-        bottom_y = clip.y1
-
-        h = page.rect.height
-        print(f"  Page {p_num+1}:")
-        print(f"    Final Top Y: {top_y:.1f} ({(top_y/h)*100:.1f}% of page)")
-        print(f"    Final Bottom Y: {bottom_y:.1f} ({(bottom_y/h)*100:.1f}% of page)")
-
-        # 2. Draw the debug layout and save to PNG
+        
+        # Draw debug layout
         dpi = 100
         w = page.rect.width
         mid_x = w / 2
 
-        # Draw crops
         if clip.y0 > page.rect.y0:
             header_band = fitz.Rect(page.rect.x0, page.rect.y0, page.rect.x1, clip.y0)
             page.draw_rect(header_band, color=(0.6, 0.6, 0.6), fill=(0.85, 0.85, 0.85), fill_opacity=0.5, width=0.5)
@@ -62,11 +44,7 @@ def test_pdf_edge_cases(pdf_path):
         table_bboxes = [fitz.Rect(t) for t in table_bbox_tuples]
         ocr_regions = _image_only_regions(page, clip)
 
-        print(f"    OCR Regions: {len(ocr_regions)}")
-        print(f"    Tables: {len(table_bboxes)}")
-
-
-        # Footer detection (Smart)
+        # Smart Footer Detection
         footer_y, guaranteed = detect_footer_y(page, clip, table_bboxes=table_bboxes)
         if footer_y is not None:
             apply_crop = True
@@ -75,7 +53,6 @@ def test_pdf_edge_cases(pdf_path):
                     apply_crop = False
                     break
             if apply_crop:
-                print(f"    Footer detected at Y={footer_y:.1f}")
                 f_rect = fitz.Rect(clip.x0, footer_y, clip.x1, clip.y1)
                 page.draw_rect(f_rect, color=(0.2, 0.5, 0.9), fill=(0.7, 0.85, 1.0), fill_opacity=0.3, width=0.5)
                 clip = fitz.Rect(clip.x0, clip.y0, clip.x1, footer_y - 1)
@@ -128,13 +105,16 @@ def test_pdf_edge_cases(pdf_path):
             page.draw_rect(bg, color=(1, 1, 1), fill=(1, 1, 1))
             page.insert_text((bg.x0 + 1, text_y), label, color=(0, 0, 1), fontsize=FONT_SIZE, fontname="helv")
 
+        out_path = os.path.join(pdf_out_dir, f"page_{p_num+1:03d}.png")
         pix = page.get_pixmap(dpi=dpi)
-        out_file = os.path.join(OUT_DIR, f"{pdf_name}_p{p_num+1}.png")
-        pix.save(out_file)
-
+        pix.save(out_path)
+        
+    page_count = len(doc)
     doc.close()
+    print(f"  ✓ Saved {page_count} pages to {pdf_out_dir}/")
 
+# Process all PDFs
 for p in glob.glob("download/*.pdf"):
-    test_pdf_edge_cases(p)
+    process_full_pdf(p)
 
-print(f"\nDone! All debug images saved to {OUT_DIR}/")
+print("\nAll done!")

@@ -94,11 +94,11 @@ def extract_tables(
     page,
     clip=None,
     strategy=None,
-) -> tuple[list[tuple[float, str]], list[tuple]]:
+    prev_table_state: dict | None = None,
+) -> tuple[list[tuple[float, str]], list[tuple], dict | None]:
     """Extract tables from a page using PyMuPDF's find_tables().
 
-    Returns (table_entries, bboxes) where table_entries is a list of
-    (y_top, table_text) tuples for positioning.
+    Returns (table_entries, bboxes, last_table_state).
     """
     kwargs = {}
     if clip is not None:
@@ -108,27 +108,31 @@ def extract_tables(
 
     tabs = page.find_tables(**kwargs)
     if not tabs.tables:
-        return [], []
+        return [], [], None
 
-    # Drop false positives from PyMuPDF's line-based detector: bordered
-    # header strips and column frames come back as 1-row "tables" with a
-    # single prose cell. A real table has ≥ 2 rows.
-    candidates = [t for t in tabs.tables if len(t.rows) >= 2]
+    # New Rule: rows >= 2 OR columns > 2
+    candidates = []
+    for t in tabs.tables:
+        rows = len(t.rows)
+        cols = len(t.header.cells)
+        if rows >= 2 or cols > 2:
+            candidates.append(t)
+            
     if not candidates:
-        return [], []
+        return [], [], None
 
     results: list[tuple[float, str]] = []
     bboxes: list[tuple] = []
-    for table in candidates:
+    
+    # Sort candidates by vertical position
+    candidates.sort(key=lambda t: t.bbox[1])
+
+    for i, table in enumerate(candidates):
         bboxes.append(table.bbox)
-
         raw_extract = table.extract()
-
-        # Fetch rawdict once for the entire table region.
         table_clip = fitz.Rect(table.bbox)
         table_rawdict = page.get_text("rawdict", clip=table_clip)
 
-        # Build grid with merged-cell tracking (RTL column order)
         grid: list[list[str]] = []
         merged: list[list[bool]] = []
         for ri, row in enumerate(table.rows):
@@ -151,6 +155,23 @@ def extract_tables(
             grid.append(row_cells)
             merged.append(row_merged)
 
+        # STITCHING LOGIC
+        # If this is the FIRST table on the page, check if it continues from prev page
+        current_headers = grid[0]
+        if i == 0 and prev_table_state:
+            # Must have same column count
+            if len(current_headers) == prev_table_state["col_count"]:
+                # Check if it starts near the top of the page
+                if table.bbox[1] < page.rect.height * 0.25:
+                    # If current headers look like data (non-empty) or the table has no headers,
+                    # we insert the remembered headers.
+                    if not any(h.strip() for h in current_headers):
+                        grid[0] = prev_table_state["headers"]
+                    else:
+                        # Even if there are headers, they might just be repeated labels.
+                        # We use the previous state to maintain consistency.
+                        pass
+
         # Fill down merged cells for self-contained rows
         for ri in range(1, len(grid)):
             for ci in range(len(grid[ri])):
@@ -159,7 +180,26 @@ def extract_tables(
 
         _format_rag_table(grid, table.bbox[1], results)
 
-    return results, bboxes
+    # Prepare state for next page
+    last = candidates[-1]
+    # Re-extract headers for the state to ensure they are the original ones
+    last_raw = last.extract()
+    last_table_rawdict = page.get_text("rawdict", clip=fitz.Rect(last.bbox))
+    
+    final_headers = []
+    for cell in reversed(last.rows[0].cells):
+        if cell:
+            final_headers.append(_extract_cell_text(page, cell, rawdict=last_table_rawdict))
+        else:
+            final_headers.append("")
+
+    last_table_state = {
+        "headers": final_headers,
+        "col_count": len(final_headers),
+        "y1": last.bbox[3]
+    }
+
+    return results, bboxes, last_table_state
 
 
 def _format_rag_table(

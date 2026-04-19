@@ -66,7 +66,7 @@ def draw_page_layout(
         page.draw_rect(footer_band, color=(0.6, 0.6, 0.6), fill=(0.85, 0.85, 0.85), fill_opacity=0.5, width=0.5)
 
     # 1. Detection — same primitives the extractor uses
-    _, table_bbox_tuples = extract_tables(page, clip=clip)
+    _, table_bbox_tuples, _ = extract_tables(page, clip=clip)
     table_bboxes = [fitz.Rect(t) for t in table_bbox_tuples]
     ocr_regions = _image_only_regions(page, clip)
 

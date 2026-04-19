@@ -699,28 +699,14 @@ def extract_page(
     on_empty: Literal["ignore", "warn", "ocr", "auto"] = "warn",
     table_strategy: str | None = None,
     gemini_model: str = DEFAULT_GEMINI_MODEL,
-) -> str:
+    prev_table_state: dict | None = None,
+) -> tuple[str, dict | None]:
     """Extract corrected Arabic text from one PyMuPDF page.
 
-    Args:
-        page: A ``fitz.Page`` object.
-        crop_top: Amount to crop from the top (header area).
-        crop_bottom: Amount to crop from the bottom (page-number area).
-        crop_unit: ``"px"`` for points/pixels, ``"pct"`` for percentage of
-            page height.
-        auto_crop_top: If *True*, attempts to detect and crop top page numbers, falling back to *crop_top* if not found.
-        auto_crop_bottom: If *True*, attempts to detect and crop bottom page numbers, falling back to *crop_bottom* if not found.
-        detect_footer: When *True*, automatically detect a footnote separator
-            line and exclude everything below it.
-        on_empty: What to do when a page has images whose content is NOT in
-            the text layer (``"ignore"``, ``"warn"``, ``"auto"``, or ``"ocr"``).
-        table_strategy: Strategy for PyMuPDF table detection.
-        gemini_model: Gemini model id used when ``on_empty="ocr"`` or ``"auto"``.
+    Returns (text, last_table_state).
     """
     # 1. INITIAL CROP
-    clip = _compute_clip(
-        page, crop_top, crop_bottom, crop_unit, auto_crop_top, auto_crop_bottom
-    )
+    clip = _compute_clip(page, crop_top, crop_bottom, crop_unit, auto_crop_top, auto_crop_bottom)
 
     # 1.5. PRE-EXTRACT TABLES
     kwargs: dict[str, Any] = {"clip": clip}
@@ -749,11 +735,12 @@ def extract_page(
     mixed_regions = _image_only_regions(page, clip)
 
     pieces: list[tuple[float, float, float, float, str]] = []
+    last_table_state = None
 
     # 4. SELECTABLE EXTRACTION
     if on_empty != "ocr":
-        table_entries, t_bboxes = extract_tables(
-            page, clip=clip, strategy=table_strategy
+        table_entries, t_bboxes, last_table_state = extract_tables(
+            page, clip=clip, strategy=table_strategy, prev_table_state=prev_table_state
         )
 
         # Add Tables
@@ -766,15 +753,12 @@ def extract_page(
         page_num_zone_y = clip.y1 - clip.height * _PAGE_NUMBER_BOTTOM_PCT
 
         for block in rawdict["blocks"]:
-            if "lines" not in block:
-                continue
+            if "lines" not in block: continue
             bx0, by0, bx1, by1 = block["bbox"]
 
             # Skip if inside a table
-            if any(
-                tx0 <= (bx0 + bx1) / 2 <= tx1 and ty0 <= (by0 + by1) / 2 <= ty1
-                for tx0, ty0, tx1, ty1 in t_bboxes
-            ):
+            if any(tx0 <= (bx0 + bx1) / 2 <= tx1 and ty0 <= (by0 + by1) / 2 <= ty1
+                   for tx0, ty0, tx1, ty1 in t_bboxes):
                 continue
 
             rows = merge_lines_by_y(block["lines"])
@@ -808,8 +792,7 @@ def extract_page(
             pieces.append((y_top, clip.y1, clip.x0, clip.x1, ocr_text))
 
     # 6. FINAL RECONSTRUCTION
-    if not pieces:
-        return ""
+    if not pieces: return "", last_table_state
 
     final_reading_order = order_reading_rtl(
         pieces,
@@ -817,7 +800,7 @@ def extract_page(
         bbox=lambda p: fitz.Rect(p[2], p[0], p[3], p[1]),
     )
 
-    return "\n\n".join(text for *_, text in final_reading_order)
+    return "\n\n".join(text for *_, text in final_reading_order), last_table_state
 
 
 def extract_pdf(
@@ -834,15 +817,9 @@ def extract_pdf(
     gemini_model: str = DEFAULT_GEMINI_MODEL,
 ) -> str:
     return extract_pdf_result(
-        pdf_path,
-        crop_top=crop_top,
-        crop_bottom=crop_bottom,
-        crop_unit=crop_unit,
-        auto_crop_top=auto_crop_top,
-        auto_crop_bottom=auto_crop_bottom,
-        detect_footer=detect_footer,
-        on_empty=on_empty,
-        table_strategy=table_strategy,
+        pdf_path, crop_top=crop_top, crop_bottom=crop_bottom, crop_unit=crop_unit,
+        auto_crop_top=auto_crop_top, auto_crop_bottom=auto_crop_bottom,
+        detect_footer=detect_footer, on_empty=on_empty, table_strategy=table_strategy,
         gemini_model=gemini_model,
     ).text
 
@@ -876,27 +853,21 @@ def extract_pdf_result(
         raise InvalidPDFPathError(f"Could not open PDF: {pdf_path}") from exc
 
     pages, empty_pages, mixed_pages, warnings = [], [], [], []
+    table_state = None
 
     for page in doc:
         page_no = _page_number(page)
-        clip = _compute_clip(
-            page, crop_top, crop_bottom, crop_unit, auto_crop_top, auto_crop_bottom
-        )
+        clip = _compute_clip(page, crop_top, crop_bottom, crop_unit, auto_crop_top, auto_crop_bottom)
         is_empty = _is_empty_page(page, clip)
         is_mixed = (not is_empty) and _has_content_images(page, clip)
 
-        text = extract_page(
-            page,
-            crop_top=crop_top,
-            crop_bottom=crop_bottom,
-            crop_unit=crop_unit,
-            auto_crop_top=auto_crop_top,
-            auto_crop_bottom=auto_crop_bottom,
-            detect_footer=detect_footer,
-            on_empty=on_empty,
-            table_strategy=table_strategy,
-            gemini_model=gemini_model,
+        text, table_state = extract_page(
+            page, crop_top=crop_top, crop_bottom=crop_bottom, crop_unit=crop_unit,
+            auto_crop_top=auto_crop_top, auto_crop_bottom=auto_crop_bottom,
+            detect_footer=detect_footer, on_empty=on_empty, table_strategy=table_strategy,
+            gemini_model=gemini_model, prev_table_state=table_state,
         )
+
 
         if is_mixed:
             mixed_pages.append(page_no)
