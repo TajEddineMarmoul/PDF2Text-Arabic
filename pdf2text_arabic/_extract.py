@@ -168,35 +168,52 @@ def _body_font_size(
 # ---------------------------------------------------------------------------
 
 
+def _is_page_number_block(block: dict[str, Any], top_zone_y: float, bottom_zone_y: float) -> bool:
+    """Return True if the block contains only a page number and is located in the margins."""
+    if "lines" not in block:
+        return False
+        
+    r = fitz.Rect(block["bbox"])
+    cy = (r.y0 + r.y1) / 2
+    
+    if top_zone_y < cy < bottom_zone_y:
+        return False
+        
+    block_text = "".join(
+        c.get("c", "")
+        for line in block.get("lines", [])
+        for span in line.get("spans", [])
+        for c in span.get("chars", [])
+    ).strip()
+
+    if not block_text:
+        return False
+        
+    return _is_page_number_text(block_text)
+
+
 def _auto_detect_page_number_y(page: fitz.Page, side: Literal["top", "bottom"]) -> float | None:
-    """Scan the top or bottom 15% of the page for a page number text.
+    """Scan the top or bottom margin of the page for a page number text.
 
     Returns the boundary Y coordinate (plus a 5px margin) or None if not found.
     """
     rect = page.rect
     h = rect.height
-    margin = h * 0.15
+    margin = h * _PAGE_NUMBER_BOTTOM_PCT
 
     if side == "top":
         clip = fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y0 + margin)
+        top_zone = rect.y0 + margin
+        bottom_zone = rect.y1  # No bottom margin for this check
     else:
         clip = fitz.Rect(rect.x0, rect.y1 - margin, rect.x1, rect.y1)
+        top_zone = rect.y0  # No top margin for this check
+        bottom_zone = rect.y1 - margin
 
     # Search for blocks in this margin
     rawdict = page.get_text("rawdict", clip=clip)
     for block in rawdict.get("blocks", []):
-        if "lines" not in block:
-            continue
-        
-        # Build block text
-        block_text = "".join(
-            c.get("c", "")
-            for line in block.get("lines", [])
-            for span in line.get("spans", [])
-            for c in span.get("chars", [])
-        ).strip()
-
-        if block_text and _is_page_number_text(block_text):
+        if _is_page_number_block(block, top_zone, bottom_zone):
             bx0, by0, bx1, by1 = block["bbox"]
             if side == "top":
                 return by1 + 5  # Crop below the top page number
@@ -462,11 +479,11 @@ def order_reading_rtl(
 def extract_page(
     page: fitz.Page,
     *,
-    crop_top: float = 0,
-    crop_bottom: float = 0,
-    crop_unit: Literal["px", "pct"] = "px",
-    auto_crop_top: bool = False,
-    auto_crop_bottom: bool = False,
+    crop_top: float = 8.0,
+    crop_bottom: float = 4.5,
+    crop_unit: Literal["px", "pct"] = "pct",
+    auto_crop_top: bool = True,
+    auto_crop_bottom: bool = True,
     detect_footer: bool = True,
     on_empty: Literal["ignore", "warn", "ocr", "auto"] = "warn",
     table_strategy: str | None = None,
@@ -589,11 +606,11 @@ def extract_page(
 def extract_pdf(
     pdf_path: str,
     *,
-    crop_top: float = 0,
-    crop_bottom: float = 0,
-    crop_unit: Literal["px", "pct"] = "px",
-    auto_crop_top: bool = False,
-    auto_crop_bottom: bool = False,
+    crop_top: float = 8.0,
+    crop_bottom: float = 4.5,
+    crop_unit: Literal["px", "pct"] = "pct",
+    auto_crop_top: bool = True,
+    auto_crop_bottom: bool = True,
     detect_footer: bool = True,
     on_empty: Literal["ignore", "warn", "ocr", "auto"] = "warn",
     table_strategy: str | None = None,
@@ -610,11 +627,11 @@ def extract_pdf(
 def extract_pdf_result(
     pdf_path: str,
     *,
-    crop_top: float = 0,
-    crop_bottom: float = 0,
-    crop_unit: Literal["px", "pct"] = "px",
-    auto_crop_top: bool = False,
-    auto_crop_bottom: bool = False,
+    crop_top: float = 8.0,
+    crop_bottom: float = 4.5,
+    crop_unit: Literal["px", "pct"] = "pct",
+    auto_crop_top: bool = True,
+    auto_crop_bottom: bool = True,
     detect_footer: bool = True,
     on_empty: Literal["ignore", "warn", "ocr", "auto"] = "warn",
     table_strategy: str | None = None,

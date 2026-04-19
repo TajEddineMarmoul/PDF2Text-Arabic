@@ -20,6 +20,7 @@ from ._extract import (
     _compute_clip,
     _image_only_regions,
     _is_page_number_text,
+    _is_page_number_block,
     detect_footer_y,
     order_reading_rtl,
 )
@@ -30,11 +31,11 @@ def draw_page_layout(
     page: fitz.Page,
     *,
     dpi: int = 150,
-    crop_top: float = 0,
-    crop_bottom: float = 0,
-    crop_unit: Literal["px", "pct"] = "px",
-    auto_crop_top: bool = False,
-    auto_crop_bottom: bool = False,
+    crop_top: float = 8.0,
+    crop_bottom: float = 4.5,
+    crop_unit: Literal["px", "pct"] = "pct",
+    auto_crop_top: bool = True,
+    auto_crop_bottom: bool = True,
     detect_footer: bool = True,
 ) -> None:
     """Render *page* with extraction overlays and show it inline.
@@ -80,9 +81,9 @@ def draw_page_layout(
 
     raw: dict[str, Any] = page.get_text("rawdict")  # type: ignore[assignment]
     
-    # Define zones for page number detection
-    page_num_bottom_zone_y = clip.y1 - clip.height * _PAGE_NUMBER_BOTTOM_PCT
-    page_num_top_zone_y = clip.y0 + clip.height * _PAGE_NUMBER_BOTTOM_PCT
+    # Define zones for page number detection relative to the page
+    page_num_bottom_zone_y = page.rect.y1 - page.rect.height * _PAGE_NUMBER_BOTTOM_PCT
+    page_num_top_zone_y = page.rect.y0 + page.rect.height * _PAGE_NUMBER_BOTTOM_PCT
     
     text_blocks: list[dict[str, Any]] = []
     page_num_blocks: list[dict[str, Any]] = []
@@ -99,28 +100,7 @@ def draw_page_layout(
         if any(r.intersects(o_rect) for o_rect in ocr_regions):
             continue
 
-        # Check if it's a page number block (top or bottom)
-        block_text = "".join(
-            c.get("c", "")
-            for line in b.get("lines", [])
-            for span in line.get("spans", [])
-            for c in span.get("chars", [])
-        ).strip()
-
-        is_pn = (
-            block_text
-            and (cy >= page_num_bottom_zone_y or cy <= page_num_top_zone_y)
-            and all(
-                _is_page_number_text(
-                    "".join(c.get("c", "") for c in span.get("chars", [])).strip()
-                )
-                for line in b.get("lines", [])
-                for span in line.get("spans", [])
-                if "".join(c.get("c", "") for c in span.get("chars", [])).strip()
-            )
-        )
-
-        if is_pn:
+        if _is_page_number_block(b, page_num_top_zone_y, page_num_bottom_zone_y):
             page_num_blocks.append(b)
         else:
             text_blocks.append(b)

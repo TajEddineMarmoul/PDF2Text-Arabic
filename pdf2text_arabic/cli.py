@@ -32,30 +32,30 @@ def main():
     parser.add_argument(
         "--crop-top",
         type=float,
-        default=0,
-        help="Crop from top of each page (default: 0).",
+        default=8.0,
+        help="Crop from top of each page (default: 8.0).",
     )
     parser.add_argument(
         "--crop-bottom",
         type=float,
-        default=0,
-        help="Crop from bottom of each page (default: 0).",
+        default=4.5,
+        help="Crop from bottom of each page (default: 4.5).",
     )
     parser.add_argument(
         "--crop-unit",
         choices=["px", "pct"],
-        default="px",
-        help="Unit for crop values: 'px' (points) or 'pct' (percent) (default: px).",
+        default="pct",
+        help="Unit for crop values: 'px' (points) or 'pct' (percent) (default: pct).",
     )
     parser.add_argument(
-        "--auto-crop-top",
+        "--no-auto-crop-top",
         action="store_true",
-        help="Automatically detect and crop page numbers at the top. Falls back to --crop-top if not found.",
+        help="Disable automatic detection and cropping of page numbers at the top.",
     )
     parser.add_argument(
-        "--auto-crop-bottom",
+        "--no-auto-crop-bottom",
         action="store_true",
-        help="Automatically detect and crop page numbers at the bottom. Falls back to --crop-bottom if not found.",
+        help="Disable automatic detection and cropping of page numbers at the bottom.",
     )
     parser.add_argument(
         "--no-footer",
@@ -115,8 +115,8 @@ def main():
                 crop_top=args.crop_top,
                 crop_bottom=args.crop_bottom,
                 crop_unit=args.crop_unit,
-                auto_crop_top=args.auto_crop_top,
-                auto_crop_bottom=args.auto_crop_bottom,
+                auto_crop_top=not args.no_auto_crop_top,
+                auto_crop_bottom=not args.no_auto_crop_bottom,
                 detect_footer=not args.no_footer,
                 on_empty=args.on_empty,
                 table_strategy=args.table_strategy,
