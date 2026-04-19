@@ -72,14 +72,14 @@ def draw_page_layout(
 
     # Shade footer region and adjust clip
     if detect_footer:
-        footer_y, guaranteed = detect_footer_y(page, clip)
+        footer_y, guaranteed = detect_footer_y(page, clip, table_bboxes=table_bboxes)
         if footer_y is not None:
             apply_crop = True
-            if not guaranteed:
-                for ty0, ty1 in [(t.y0, t.y1) for t in table_bboxes]:
-                    if ty0 <= footer_y <= ty1:
-                        apply_crop = False
-                        break
+            # Always check against tables to avoid cutting in the middle of data
+            for ty0, ty1 in [(t.y0, t.y1) for t in table_bboxes]:
+                if ty0 <= footer_y <= ty1:
+                    apply_crop = False
+                    break
             if apply_crop:
                 f_rect = fitz.Rect(clip.x0, footer_y, clip.x1, clip.y1)
                 page.draw_rect(f_rect, color=(0.2, 0.5, 0.9), fill=(0.7, 0.85, 1.0), fill_opacity=0.3, width=0.5)

@@ -10,28 +10,24 @@ Implement automatic page number detection for cropping (`crop_top="auto"`, `crop
 ## Implementation Steps
 
 ### 1. Enhance Cropping Logic in `_extract.py`
-- Add a helper `_auto_detect_page_number_y(page, side="bottom")` to find the Y-coordinate of page numbers in margins.
-- Update `_compute_clip` to accept the `page` object and handle `Literal["auto"]` for `crop_top` and `crop_bottom`.
-    - If `crop_top="auto"`, it will scan the top 15% for a page number.
-    - If `crop_bottom="auto"`, it will scan the bottom 15% for a page number.
-- Update public API signatures (`extract_page`, `extract_pdf`, `extract_pdf_result`) to support `float | Literal["auto"]`.
+- Add a helper `_auto_detect_top_y(page)` to find repeating headers (text or image) or page numbers.
+- Add a helper `_auto_detect_bottom_y(page)` to find page numbers in the bottom margin.
+- Update `_compute_clip` to use these helpers when `auto_crop_top` or `auto_crop_bottom` is True.
+- Update public API signatures to use boolean flags with smart defaults.
 
-### 2. Synchronize Debug Visualization in `debug.py`
-- Update `draw_page_layout` signature to include `detect_footer: bool = True`.
-- Update it to use the new `_compute_clip` (supporting `"auto"`).
-- **Visualize Footers**:
-    - Call `detect_footer_y` if `detect_footer` is True.
-    - Draw a shaded rectangle over the detected footer region.
-- **Visualize Filtered Page Numbers**:
-    - Modify the block filtering logic. Instead of skipping page-number blocks, mark them as `type: "PAGE_NUM"`.
-    - In the drawing loop, color `PAGE_NUM` blocks **Grey** and label them `PN`.
-- **Visualize Crops**:
-    - Ensure both manual and `"auto"` crop regions are shaded correctly.
+### 2. Implement Smart OCR Region Merging
+- Add `_merge_regions_safely(page, regions)` helper.
+    - Clusters image regions that are vertically close.
+    - Verifies that no selectable text exists in the gaps before merging.
+- Update `_image_only_regions` to return consolidated, safer bboxes.
+- This fixes the "khitab malak" edge case where 40+ tiny images were causing separate API calls.
+
+### 3. Synchronize Debug Visualization in `debug.py`
+- Update `draw_page_layout` to match the new boolean parameter logic and improved defaults.
+- Ensure footer detection correctly trims the "Reading Order" boxes so no boxes appear over ignored footers.
+- Use the updated unified `_is_page_number_block` for consistent filtering.
 
 ## Verification
-- Test `draw_page_layout` in a notebook with `crop_bottom="auto"` and `detect_footer=True`.
-- Confirm that:
-    - The page number is highlighted in grey and labelled `PN`.
-    - The footer area is shaded.
-    - The automated crop region matches the grey shaded area at the bottom.
-- Verify that `extract_page` with the same parameters yields the expected text without the page number or footer.
+- Run `draw_page_layout` on `khitab malak` to confirm fragmented images are now grouped.
+- Run on `قانون المالية 1978` to confirm footnote numbers are no longer boxed.
+- Confirm all existing PDFs process correctly with new defaults.
