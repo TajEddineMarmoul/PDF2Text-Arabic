@@ -29,7 +29,10 @@ Header 3: [Cell Value]
 If a cell is empty, do not include that line. Do not generate completely empty table rows.
 
 EXCLUSIONS:
-Strictly ignore and DO NOT extract any footnotes at the bottom of the page. You must also ignore and remove any superscript footnote markers (e.g., ¹, ², ³) embedded within the main text. Ignore all page headers, page numbers, and stamps. Only extract the core body content."""
+Strictly ignore and DO NOT extract any footnotes at the bottom of the page. You must also ignore and remove any superscript footnote markers (e.g., ¹, ², ³) embedded within the main text. Ignore all page headers, page numbers, and stamps. Only extract the core body content.
+
+REPEATING HEADERS AND PAGE NUMBERS:
+The top of each page often contains a repeating masthead or running header (e.g., "الجريدة الرسمية عدد XXXX", issue date, logos, or decorative rule lines). The bottom often contains a standalone page number (digits, sometimes wrapped like "-12-" or "(12)"). These elements are NOT body content. Skip them completely even if the geometric crop did not fully remove them. If the very first visible line is clearly a running masthead and not body prose, drop it. If the very last visible line is just a number, drop it."""
 
 
 def gemini_available() -> bool:
