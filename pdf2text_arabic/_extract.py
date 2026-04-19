@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 import tempfile
 from typing import Any, Callable, Literal
-
+import re
 import fitz
 
 from ._footer import detect_footer_y
@@ -55,6 +55,7 @@ def _is_page_number_text(text: str) -> bool:
     if any(c.isalpha() for c in t):
         return False
     return any(c.isdigit() for c in t)
+
 
 # --- Mixed-page (image-based content region) detection ---
 # An image placement is treated as a "content block" that likely needs
@@ -168,17 +169,19 @@ def _body_font_size(
 # ---------------------------------------------------------------------------
 
 
-def _is_page_number_block(block: dict[str, Any], top_zone_y: float, bottom_zone_y: float) -> bool:
+def _is_page_number_block(
+    block: dict[str, Any], top_zone_y: float, bottom_zone_y: float
+) -> bool:
     """Return True if the block contains only a page number and is located in the margins."""
     if "lines" not in block:
         return False
-        
+
     r = fitz.Rect(block["bbox"])
     cy = (r.y0 + r.y1) / 2
-    
+
     if top_zone_y < cy < bottom_zone_y:
         return False
-        
+
     block_text = "".join(
         c.get("c", "")
         for line in block.get("lines", [])
@@ -188,33 +191,151 @@ def _is_page_number_block(block: dict[str, Any], top_zone_y: float, bottom_zone_
 
     if not block_text:
         return False
-        
+
     return _is_page_number_text(block_text)
 
 
-def _auto_detect_page_number_y(page: fitz.Page, side: Literal["top", "bottom"]) -> float | None:
-    """Scan the top or bottom margin of the page for a page number text.
+def _shares_words(text1: str, text2: str) -> bool:
+    """Return True if text1 and text2 share at least 3 words, or 50% of their words."""
+    t1 = re.sub(r"[^\w\s]", "", text1)
+    t1 = re.sub(r"\d+", "", t1)
+    t2 = re.sub(r"[^\w\s]", "", text2)
+    t2 = re.sub(r"\d+", "", t2)
+
+    w1 = set(t1.split())
+    w2 = set(t2.split())
+
+    if not w1 or not w2:
+        return False
+
+    overlap = len(w1 & w2)
+    return overlap >= 3 or (overlap / len(w1) >= 0.5)
+
+
+def _auto_detect_top_y(page: fitz.Page) -> float | None:
+    """Scan the top margin for a page number or repeating header.
 
     Returns the boundary Y coordinate (plus a 5px margin) if the outermost
+    text block or small logo is a page number or repeats across adjacent pages.
+    """
+    doc = page.parent
+    rect = page.rect
+    margin = rect.height * 0.15
+    clip = fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y0 + margin)
+
+    def get_top_blocks(p: fitz.Page):
+        rawdict = p.get_text("rawdict", clip=clip)
+        blocks = []
+        for b in rawdict.get("blocks", []):
+            if "lines" not in b:
+                continue
+            text = "".join(
+                c.get("c", "")
+                for l in b["lines"]
+                for s in l["spans"]
+                for c in s["chars"]
+            ).strip()
+            if not text:
+                continue
+            blocks.append(
+                {
+                    "text": text,
+                    "bbox": b["bbox"],
+                    "cy": (b["bbox"][1] + b["bbox"][3]) / 2,
+                    "block": b,
+                }
+            )
+        blocks.sort(key=lambda x: x["cy"])
+        return blocks
+
+    def get_top_images(p: fitz.Page):
+        images = []
+        try:
+            for info in p.get_image_info(hashes=True):
+                ir = fitz.Rect(info["bbox"])
+                # Must be in the top margin AND be a small logo (< 20% of page height)
+                # This protects against cropping full-page scanned images.
+                if ir.y0 < clip.y1 and ir.height < rect.height * 0.2:
+                    images.append(
+                        {
+                            "bbox": info["bbox"],
+                            "cy": (ir.y0 + ir.y1) / 2,
+                            "digest": info.get("digest"),
+                        }
+                    )
+        except Exception:
+            pass
+        images.sort(key=lambda x: x["cy"])
+        return images
+
+    curr_blocks = get_top_blocks(page)
+    curr_images = get_top_images(page)
+
+    first_text = curr_blocks[0] if curr_blocks else None
+    first_img = curr_images[0] if curr_images else None
+
+    outermost_type = None
+    if first_text and first_img:
+        outermost_type = "text" if first_text["cy"] < first_img["cy"] else "image"
+    elif first_text:
+        outermost_type = "text"
+    elif first_img:
+        outermost_type = "image"
+
+    if not outermost_type:
+        return None
+
+    if outermost_type == "text":
+        curr_text = first_text["text"]
+        # 1. Is it a standalone page number?
+        if _is_page_number_block(first_text["block"], rect.y0 + margin, rect.y1):
+            return first_text["bbox"][3] + 5
+
+        # 2. Is it a repeating header?
+        if doc:
+            if page.number > 0:
+                prev_blocks = get_top_blocks(doc[page.number - 1])
+                if prev_blocks and _shares_words(curr_text, prev_blocks[0]["text"]):
+                    return first_text["bbox"][3] + 5
+
+            if page.number < len(doc) - 1:
+                next_blocks = get_top_blocks(doc[page.number + 1])
+                if next_blocks and _shares_words(curr_text, next_blocks[0]["text"]):
+                    return first_text["bbox"][3] + 5
+
+    elif outermost_type == "image":
+        # 3. Is it a repeating image header?
+        if doc and first_img.get("digest"):
+            if page.number > 0:
+                prev_images = get_top_images(doc[page.number - 1])
+                if prev_images and prev_images[0].get("digest") == first_img["digest"]:
+                    return first_img["bbox"][3] + 5
+
+            if page.number < len(doc) - 1:
+                next_images = get_top_images(doc[page.number + 1])
+                if next_images and next_images[0].get("digest") == first_img["digest"]:
+                    return first_img["bbox"][3] + 5
+
+    return None
+
+
+def _auto_detect_bottom_y(page: fitz.Page) -> float | None:
+    """Scan the bottom margin of the page for a page number text.
+
+    Returns the boundary Y coordinate (minus a 5px margin) if the outermost
     text block in the margin is a page number, else None.
     """
     rect = page.rect
-    h = rect.height
-    margin = h * _PAGE_NUMBER_BOTTOM_PCT
+    margin = rect.height * _PAGE_NUMBER_BOTTOM_PCT
+    clip = fitz.Rect(rect.x0, rect.y1 - margin, rect.x1, rect.y1)
 
-    if side == "top":
-        clip = fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y0 + margin)
-    else:
-        clip = fitz.Rect(rect.x0, rect.y1 - margin, rect.x1, rect.y1)
-
-    # Search for text blocks in this margin
     rawdict = page.get_text("rawdict", clip=clip)
     valid_blocks = []
-    
+
     for block in rawdict.get("blocks", []):
         if "lines" not in block:
             continue
-        
+
         block_text = "".join(
             c.get("c", "")
             for line in block.get("lines", [])
@@ -224,31 +345,20 @@ def _auto_detect_page_number_y(page: fitz.Page, side: Literal["top", "bottom"]) 
 
         if not block_text:
             continue
-            
-        r = fitz.Rect(block["bbox"])
-        cy = (r.y0 + r.y1) / 2
-        valid_blocks.append({
-            "text": block_text,
-            "cy": cy,
-            "bbox": block["bbox"]
-        })
+
+        cy = (block["bbox"][1] + block["bbox"][3]) / 2
+        valid_blocks.append(
+            {"text": block_text, "cy": cy, "bbox": block["bbox"], "block": block}
+        )
 
     if not valid_blocks:
         return None
 
-    # Sort blocks vertically
     valid_blocks.sort(key=lambda x: x["cy"])
+    last_block = valid_blocks[-1]
 
-    if side == "top":
-        # The topmost block must be the page number
-        first_block = valid_blocks[0]
-        if _is_page_number_text(first_block["text"]):
-            return first_block["bbox"][3] + 5  # by1 + 5
-    else:
-        # The bottommost block must be the page number
-        last_block = valid_blocks[-1]
-        if _is_page_number_text(last_block["text"]):
-            return last_block["bbox"][1] - 5  # by0 - 5
+    if _is_page_number_block(last_block["block"], rect.y0, rect.y1 - margin):
+        return last_block["bbox"][1] - 5  # by0 - 5
 
     return None
 
@@ -266,18 +376,22 @@ def _compute_clip(
     y0, y1 = page_rect.y0, page_rect.y1
 
     # Resolve Top
-    manual_top = y0 + (page_rect.height * crop_top / 100 if crop_unit == "pct" else crop_top)
+    manual_top = y0 + (
+        page_rect.height * crop_top / 100 if crop_unit == "pct" else crop_top
+    )
     resolved_top = manual_top
     if auto_crop_top:
-        auto_y = _auto_detect_page_number_y(page, "top")
+        auto_y = _auto_detect_top_y(page)
         if auto_y is not None:
             resolved_top = auto_y
 
     # Resolve Bottom
-    manual_bottom = y1 - (page_rect.height * crop_bottom / 100 if crop_unit == "pct" else crop_bottom)
+    manual_bottom = y1 - (
+        page_rect.height * crop_bottom / 100 if crop_unit == "pct" else crop_bottom
+    )
     resolved_bottom = manual_bottom
     if auto_crop_bottom:
-        auto_y = _auto_detect_page_number_y(page, "bottom")
+        auto_y = _auto_detect_bottom_y(page)
         if auto_y is not None:
             resolved_bottom = auto_y
 
@@ -311,9 +425,7 @@ def _image_only_regions(page: fitz.Page, clip: fitz.Rect) -> list[fitz.Rect]:
     # 1. Find all selectable text blocks in the clip
     blocks: list[tuple[Any, ...]] = page.get_text("blocks", clip=clip)  # type: ignore[assignment]
     text_bboxes = [
-        fitz.Rect(b[:4])
-        for b in blocks
-        if b[6] == 0 and b[4].strip()  # type 0 is text
+        fitz.Rect(b[:4]) for b in blocks if b[6] == 0 and b[4].strip()  # type 0 is text
     ]
 
     regions: list[fitz.Rect] = []
@@ -358,7 +470,6 @@ def _image_only_regions(page: fitz.Page, clip: fitz.Rect) -> list[fitz.Rect]:
 def _has_content_images(page: fitz.Page, clip: fitz.Rect) -> bool:
     """Return True if *page* has at least one image-only content region."""
     return bool(_image_only_regions(page, clip))
-
 
 
 def _page_number(page: fitz.Page) -> int:
@@ -463,7 +574,9 @@ def order_reading_rtl(
     for s in merged:
         if s["y0"] > cur_y:
             bands.append({"type": "columns", "y0": cur_y, "y1": s["y0"], "blocks": []})
-        bands.append({"type": "spanning", "y0": s["y0"], "y1": s["y1"], "blocks": s["blocks"]})
+        bands.append(
+            {"type": "spanning", "y0": s["y0"], "y1": s["y1"], "blocks": s["blocks"]}
+        )
         cur_y = s["y1"]
     if cur_y < clip.y1:
         bands.append({"type": "columns", "y0": cur_y, "y1": clip.y1, "blocks": []})
@@ -479,7 +592,10 @@ def order_reading_rtl(
                 break
         if not assigned:
             for band in bands:
-                if band["type"] == "columns" and band["y0"] - 10 <= cy <= band["y1"] + 10:
+                if (
+                    band["type"] == "columns"
+                    and band["y0"] - 10 <= cy <= band["y1"] + 10
+                ):
                     band["blocks"].append(it)
                     break
 
@@ -538,13 +654,15 @@ def extract_page(
         gemini_model: Gemini model id used when ``on_empty="ocr"`` or ``"auto"``.
     """
     # 1. INITIAL CROP
-    clip = _compute_clip(page, crop_top, crop_bottom, crop_unit, auto_crop_top, auto_crop_bottom)
+    clip = _compute_clip(
+        page, crop_top, crop_bottom, crop_unit, auto_crop_top, auto_crop_bottom
+    )
 
     # 1.5. PRE-EXTRACT TABLES
     kwargs: dict[str, Any] = {"clip": clip}
     if table_strategy is not None:
         kwargs["strategy"] = table_strategy
-        
+
     tabs = page.find_tables(**kwargs)
     table_bboxes = [fitz.Rect(t.bbox) for t in tabs.tables]
 
@@ -584,12 +702,15 @@ def extract_page(
         page_num_zone_y = clip.y1 - clip.height * _PAGE_NUMBER_BOTTOM_PCT
 
         for block in rawdict["blocks"]:
-            if "lines" not in block: continue
+            if "lines" not in block:
+                continue
             bx0, by0, bx1, by1 = block["bbox"]
 
             # Skip if inside a table
-            if any(tx0 <= (bx0 + bx1) / 2 <= tx1 and ty0 <= (by0 + by1) / 2 <= ty1
-                   for tx0, ty0, tx1, ty1 in t_bboxes):
+            if any(
+                tx0 <= (bx0 + bx1) / 2 <= tx1 and ty0 <= (by0 + by1) / 2 <= ty1
+                for tx0, ty0, tx1, ty1 in t_bboxes
+            ):
                 continue
 
             rows = merge_lines_by_y(block["lines"])
@@ -623,7 +744,8 @@ def extract_page(
             pieces.append((y_top, clip.y1, clip.x0, clip.x1, ocr_text))
 
     # 6. FINAL RECONSTRUCTION
-    if not pieces: return ""
+    if not pieces:
+        return ""
 
     final_reading_order = order_reading_rtl(
         pieces,
@@ -648,9 +770,15 @@ def extract_pdf(
     gemini_model: str = DEFAULT_GEMINI_MODEL,
 ) -> str:
     return extract_pdf_result(
-        pdf_path, crop_top=crop_top, crop_bottom=crop_bottom, crop_unit=crop_unit,
-        auto_crop_top=auto_crop_top, auto_crop_bottom=auto_crop_bottom,
-        detect_footer=detect_footer, on_empty=on_empty, table_strategy=table_strategy,
+        pdf_path,
+        crop_top=crop_top,
+        crop_bottom=crop_bottom,
+        crop_unit=crop_unit,
+        auto_crop_top=auto_crop_top,
+        auto_crop_bottom=auto_crop_bottom,
+        detect_footer=detect_footer,
+        on_empty=on_empty,
+        table_strategy=table_strategy,
         gemini_model=gemini_model,
     ).text
 
@@ -687,28 +815,43 @@ def extract_pdf_result(
 
     for page in doc:
         page_no = _page_number(page)
-        clip = _compute_clip(page, crop_top, crop_bottom, crop_unit, auto_crop_top, auto_crop_bottom)
+        clip = _compute_clip(
+            page, crop_top, crop_bottom, crop_unit, auto_crop_top, auto_crop_bottom
+        )
         is_empty = _is_empty_page(page, clip)
         is_mixed = (not is_empty) and _has_content_images(page, clip)
 
         text = extract_page(
-            page, crop_top=crop_top, crop_bottom=crop_bottom, crop_unit=crop_unit,
-            auto_crop_top=auto_crop_top, auto_crop_bottom=auto_crop_bottom,
-            detect_footer=detect_footer, on_empty=on_empty, table_strategy=table_strategy,
+            page,
+            crop_top=crop_top,
+            crop_bottom=crop_bottom,
+            crop_unit=crop_unit,
+            auto_crop_top=auto_crop_top,
+            auto_crop_bottom=auto_crop_bottom,
+            detect_footer=detect_footer,
+            on_empty=on_empty,
+            table_strategy=table_strategy,
             gemini_model=gemini_model,
         )
 
         if is_mixed:
-            mixed_pages.append(page_no); warnings.append(f"mixed_page:{page_no}")
+            mixed_pages.append(page_no)
+            warnings.append(f"mixed_page:{page_no}")
 
-        if text.strip(): pages.append(text)
+        if text.strip():
+            pages.append(text)
         elif not is_mixed:
-            empty_pages.append(page_no); warnings.append(f"empty_page:{page_no}")
+            empty_pages.append(page_no)
+            warnings.append(f"empty_page:{page_no}")
 
     pages_total = len(doc)
     doc.close()
 
     return ExtractionResult(
-        text="\n\n".join(pages), pages_total=pages_total, pages_with_text=len(pages),
-        empty_pages=empty_pages, mixed_pages=mixed_pages, warnings=warnings,
+        text="\n\n".join(pages),
+        pages_total=pages_total,
+        pages_with_text=len(pages),
+        empty_pages=empty_pages,
+        mixed_pages=mixed_pages,
+        warnings=warnings,
     )
