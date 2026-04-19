@@ -176,10 +176,12 @@ def _detect_footer_by_smart_markers(page, clip: fitz.Rect, tips: set[str], footn
             lines_info.append((y, line_text, ldom))
 
             for val in tips:
+                # FOOTER RULE: Must start with "number-" or "numberـ" (dash)
+                # We EXPLICITLY ignore "number)" or "number )" which are body lists.
                 if line_text.startswith(val):
                     rest = line_text[len(val):].strip()
                     is_marker = False
-                    if rest.startswith("-") or rest.startswith("ـ") or not rest:
+                    if rest.startswith("-") or rest.startswith("ـ"):
                         is_marker = True
                     elif rest.startswith("."):
                         after_dot = rest[1:].lstrip()
@@ -272,25 +274,48 @@ def detect_footer_y(
     clip: fitz.Rect, 
     table_bboxes: list[fitz.Rect] | None = None
 ) -> tuple[float | None, bool]:
-    """Find the y-coordinate where footnotes begin within *clip*."""
-    # 1. Visual Line (Drawings)
-    y = _detect_footer_by_line(page, clip, table_bboxes=table_bboxes)
-    if y is not None:
-        return y, True
-
-    # 2. Text-based Line (Dashes, dots, or long spaces)
-    y = _detect_footer_by_text_line(page, clip)
-    if y is not None:
-        return y, True
-
-    # --- TIPS GATEKEEPER ---
+    """Find the y-coordinate where footnotes begin within *clip*.
+    
+    FOOTER RULE: Detection is only active if the page contains superscript 
+    markers (tips) in the body text.
+    """
     raw_data = page.get_text("rawdict", clip=clip)
     body_size = _get_body_size(raw_data)
     tips = _collect_superscript_tips(page, clip, body_size)
 
-    # GOLDEN RULE: If no tips found, remaining strategies are disabled
+    # GOLDEN RULE: If no superscript markers found, we assume no footnotes exist.
     if not tips:
         return None, False
+
+    # 1. Visual Line (Drawings)
+    y = _detect_footer_by_line(page, clip, table_bboxes=table_bboxes)
+    if y is not None:
+        # GOLDEN RULE: A line is only a footer separator if a tip is found BELOW it.
+        # This prevents mid-page lines from being flagged.
+        below_clip = fitz.Rect(clip.x0, y, clip.x1, clip.y1)
+        below_text = page.get_text("text", clip=below_clip).strip()
+        # Verify that at least one tip is used as a marker (tip followed by dash)
+        has_real_marker = False
+        for tip in tips:
+            # Look for "digit-" or "digitـ" at the start of a line
+            if re.search(fr"^{re.escape(tip)}[\-ـ]", below_text, re.MULTILINE):
+                has_real_marker = True
+                break
+        if has_real_marker:
+            return y, True
+
+    # 2. Text-based Line (Dashes, dots, or long spaces)
+    y = _detect_footer_by_text_line(page, clip)
+    if y is not None:
+        below_clip = fitz.Rect(clip.x0, y, clip.x1, clip.y1)
+        below_text = page.get_text("text", clip=below_clip).strip()
+        has_real_marker = False
+        for tip in tips:
+            if re.search(fr"^{re.escape(tip)}[\-ـ]", below_text, re.MULTILINE):
+                has_real_marker = True
+                break
+        if has_real_marker:
+            return y, True
 
     # Calculate footnote size for remaining strategies
     sz_chars = _get_page_fonts(raw_data)

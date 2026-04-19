@@ -107,15 +107,33 @@ def extract_tables(
         kwargs["strategy"] = strategy
 
     tabs = page.find_tables(**kwargs)
+    
+    # AUTO-FALLBACK: If we found a shallow table (1-3 rows) with many columns, 
+    # it is likely a header with a borderless body (common in Customs Tariff docs).
+    if strategy is None:
+        max_rows = 0
+        max_cols = 0
+        if tabs.tables:
+            max_rows = max(len(t.rows) for t in tabs.tables)
+            max_cols = max(len(t.header.cells) for t in tabs.tables)
+            
+        if 1 <= max_rows < 4 and max_cols > 5:
+            text_tabs = page.find_tables(strategy="text", clip=clip)
+            if text_tabs.tables:
+                text_max_rows = max([len(t.rows) for t in text_tabs.tables])
+                # Only switch if 'text' strategy finds a significantly larger table
+                if text_max_rows > max_rows + 5:
+                    tabs = text_tabs
+
     if not tabs.tables:
         return [], [], None
 
-    # New Rule: rows >= 2 OR columns > 2
+    # New Rule: Must have at least 2 rows to be considered a table.
+    # 1-row detections are usually just justified text lines.
     candidates = []
     for t in tabs.tables:
         rows = len(t.rows)
-        cols = len(t.header.cells)
-        if rows >= 2 or cols > 2:
+        if rows >= 2:
             candidates.append(t)
             
     if not candidates:
