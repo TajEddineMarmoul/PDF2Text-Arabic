@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 from pathlib import Path
-import re
 import tempfile
 from typing import Any, Callable, Literal
 
@@ -37,7 +36,25 @@ _SUPERSCRIPT_ABS_CEIL = 13
 # than this threshold.
 _EMPTY_TEXT_THRESHOLD = 30
 
-_PAGE_NUMBER_RE = re.compile(r"^[\s\-–—]*\d+[\s\-–—]*$")
+# Only treat a digit-only line as a page number when it sits inside the
+# bottom ``_PAGE_NUMBER_BOTTOM_PCT`` fraction of the clip. Guards against
+# dropping legitimate numeric body text higher up on the page.
+_PAGE_NUMBER_BOTTOM_PCT = 0.12
+
+
+def _is_page_number_text(text: str) -> bool:
+    """True if *text* looks like a bare page number (e.g. ``-3-``, ``(١٢)``).
+
+    Accepts any combination of digits (ASCII or Arabic-Indic) surrounded by
+    punctuation/whitespace. Rejects anything containing a letter, so real
+    body text like ``المادة 3`` is kept.
+    """
+    t = text.strip()
+    if not t:
+        return False
+    if any(c.isalpha() for c in t):
+        return False
+    return any(c.isdigit() for c in t)
 
 # --- Mixed-page (image-based content region) detection ---
 # An image placement is treated as a "content block" that likely needs
@@ -151,21 +168,72 @@ def _body_font_size(
 # ---------------------------------------------------------------------------
 
 
+def _auto_detect_page_number_y(page: fitz.Page, side: Literal["top", "bottom"]) -> float | None:
+    """Scan the top or bottom 15% of the page for a page number text.
+
+    Returns the boundary Y coordinate (plus a 5px margin) or None if not found.
+    """
+    rect = page.rect
+    h = rect.height
+    margin = h * 0.15
+
+    if side == "top":
+        clip = fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y0 + margin)
+    else:
+        clip = fitz.Rect(rect.x0, rect.y1 - margin, rect.x1, rect.y1)
+
+    # Search for blocks in this margin
+    rawdict = page.get_text("rawdict", clip=clip)
+    for block in rawdict.get("blocks", []):
+        if "lines" not in block:
+            continue
+        
+        # Build block text
+        block_text = "".join(
+            c.get("c", "")
+            for line in block.get("lines", [])
+            for span in line.get("spans", [])
+            for c in span.get("chars", [])
+        ).strip()
+
+        if block_text and _is_page_number_text(block_text):
+            bx0, by0, bx1, by1 = block["bbox"]
+            if side == "top":
+                return by1 + 5  # Crop below the top page number
+            else:
+                return by0 - 5  # Crop above the bottom page number
+    return None
+
+
 def _compute_clip(
-    page_rect: fitz.Rect,
+    page: fitz.Page,
     crop_top: float,
     crop_bottom: float,
     crop_unit: Literal["px", "pct"],
+    auto_crop_top: bool = False,
+    auto_crop_bottom: bool = False,
 ) -> fitz.Rect:
-    """Build a clip rectangle from crop parameters."""
-    if crop_unit == "pct":
-        h = page_rect.height
-        top = page_rect.y0 + h * crop_top / 100
-        bottom = page_rect.y1 - h * crop_bottom / 100
-    else:
-        top = page_rect.y0 + crop_top
-        bottom = page_rect.y1 - crop_bottom
-    return fitz.Rect(page_rect.x0, top, page_rect.x1, bottom)
+    """Build a clip rectangle from crop parameters, resolving auto-detection if requested."""
+    page_rect = page.rect
+    y0, y1 = page_rect.y0, page_rect.y1
+
+    # Resolve Top
+    manual_top = y0 + (page_rect.height * crop_top / 100 if crop_unit == "pct" else crop_top)
+    resolved_top = manual_top
+    if auto_crop_top:
+        auto_y = _auto_detect_page_number_y(page, "top")
+        if auto_y is not None:
+            resolved_top = auto_y
+
+    # Resolve Bottom
+    manual_bottom = y1 - (page_rect.height * crop_bottom / 100 if crop_unit == "pct" else crop_bottom)
+    resolved_bottom = manual_bottom
+    if auto_crop_bottom:
+        auto_y = _auto_detect_page_number_y(page, "bottom")
+        if auto_y is not None:
+            resolved_bottom = auto_y
+
+    return fitz.Rect(page_rect.x0, resolved_top, page_rect.x1, resolved_bottom)
 
 
 def _is_empty_page(page: fitz.Page, clip: fitz.Rect) -> bool:
@@ -180,7 +248,7 @@ def _is_empty_page(page: fitz.Page, clip: fitz.Rect) -> bool:
     raw = page.get_text("text", clip=clip).strip()
     # Strip lines that look like page numbers
     meaningful = "\n".join(
-        ln for ln in raw.splitlines() if not _PAGE_NUMBER_RE.match(ln)
+        ln for ln in raw.splitlines() if not _is_page_number_text(ln)
     ).strip()
     return len(meaningful) < _EMPTY_TEXT_THRESHOLD
 
@@ -397,6 +465,8 @@ def extract_page(
     crop_top: float = 0,
     crop_bottom: float = 0,
     crop_unit: Literal["px", "pct"] = "px",
+    auto_crop_top: bool = False,
+    auto_crop_bottom: bool = False,
     detect_footer: bool = True,
     on_empty: Literal["ignore", "warn", "ocr", "auto"] = "warn",
     table_strategy: str | None = None,
@@ -410,6 +480,8 @@ def extract_page(
         crop_bottom: Amount to crop from the bottom (page-number area).
         crop_unit: ``"px"`` for points/pixels, ``"pct"`` for percentage of
             page height.
+        auto_crop_top: If *True*, attempts to detect and crop top page numbers, falling back to *crop_top* if not found.
+        auto_crop_bottom: If *True*, attempts to detect and crop bottom page numbers, falling back to *crop_bottom* if not found.
         detect_footer: When *True*, automatically detect a footnote separator
             line and exclude everything below it.
         on_empty: What to do when a page has images whose content is NOT in
@@ -418,7 +490,7 @@ def extract_page(
         gemini_model: Gemini model id used when ``on_empty="ocr"`` or ``"auto"``.
     """
     # 1. INITIAL CROP
-    clip = _compute_clip(page.rect, crop_top, crop_bottom, crop_unit)
+    clip = _compute_clip(page, crop_top, crop_bottom, crop_unit, auto_crop_top, auto_crop_bottom)
 
     # 1.5. PRE-EXTRACT TABLES
     kwargs: dict[str, Any] = {"clip": clip}
@@ -461,6 +533,7 @@ def extract_page(
         # Add Text
         rawdict: dict[str, Any] = page.get_text("rawdict", clip=clip)
         body_size = _body_font_size(rawdict, t_bboxes)
+        page_num_zone_y = clip.y1 - clip.height * _PAGE_NUMBER_BOTTOM_PCT
 
         for block in rawdict["blocks"]:
             if "lines" not in block: continue
@@ -479,8 +552,13 @@ def extract_page(
                 spans = [s for s in row["spans"] if not _is_superscript(s, body_size)]
                 text = build_row_text(spans)
                 text = clean_arabic(text).strip()
-                if text and not _PAGE_NUMBER_RE.match(text):
-                    lines_text.append(text)
+                if not text:
+                    continue
+                # Drop digit-only lines only when they sit in the bottom
+                # page-number zone — keeps real numeric body text intact.
+                if row["cy"] >= page_num_zone_y and _is_page_number_text(text):
+                    continue
+                lines_text.append(text)
 
             if lines_text:
                 pieces.append((by0, by1, bx0, bx1, "\n".join(lines_text)))
@@ -514,6 +592,8 @@ def extract_pdf(
     crop_top: float = 0,
     crop_bottom: float = 0,
     crop_unit: Literal["px", "pct"] = "px",
+    auto_crop_top: bool = False,
+    auto_crop_bottom: bool = False,
     detect_footer: bool = True,
     on_empty: Literal["ignore", "warn", "ocr", "auto"] = "warn",
     table_strategy: str | None = None,
@@ -521,6 +601,7 @@ def extract_pdf(
 ) -> str:
     return extract_pdf_result(
         pdf_path, crop_top=crop_top, crop_bottom=crop_bottom, crop_unit=crop_unit,
+        auto_crop_top=auto_crop_top, auto_crop_bottom=auto_crop_bottom,
         detect_footer=detect_footer, on_empty=on_empty, table_strategy=table_strategy,
         gemini_model=gemini_model,
     ).text
@@ -532,6 +613,8 @@ def extract_pdf_result(
     crop_top: float = 0,
     crop_bottom: float = 0,
     crop_unit: Literal["px", "pct"] = "px",
+    auto_crop_top: bool = False,
+    auto_crop_bottom: bool = False,
     detect_footer: bool = True,
     on_empty: Literal["ignore", "warn", "ocr", "auto"] = "warn",
     table_strategy: str | None = None,
@@ -556,12 +639,13 @@ def extract_pdf_result(
 
     for page in doc:
         page_no = _page_number(page)
-        clip = _compute_clip(page.rect, crop_top, crop_bottom, crop_unit)
+        clip = _compute_clip(page, crop_top, crop_bottom, crop_unit, auto_crop_top, auto_crop_bottom)
         is_empty = _is_empty_page(page, clip)
         is_mixed = (not is_empty) and _has_content_images(page, clip)
 
         text = extract_page(
             page, crop_top=crop_top, crop_bottom=crop_bottom, crop_unit=crop_unit,
+            auto_crop_top=auto_crop_top, auto_crop_bottom=auto_crop_bottom,
             detect_footer=detect_footer, on_empty=on_empty, table_strategy=table_strategy,
             gemini_model=gemini_model,
         )

@@ -48,6 +48,16 @@ def main():
         help="Unit for crop values: 'px' (points) or 'pct' (percent) (default: px).",
     )
     parser.add_argument(
+        "--auto-crop-top",
+        action="store_true",
+        help="Automatically detect and crop page numbers at the top. Falls back to --crop-top if not found.",
+    )
+    parser.add_argument(
+        "--auto-crop-bottom",
+        action="store_true",
+        help="Automatically detect and crop page numbers at the bottom. Falls back to --crop-bottom if not found.",
+    )
+    parser.add_argument(
         "--no-footer",
         action="store_true",
         help="Disable automatic footnote separator detection.",
@@ -105,6 +115,8 @@ def main():
                 crop_top=args.crop_top,
                 crop_bottom=args.crop_bottom,
                 crop_unit=args.crop_unit,
+                auto_crop_top=args.auto_crop_top,
+                auto_crop_bottom=args.auto_crop_bottom,
                 detect_footer=not args.no_footer,
                 on_empty=args.on_empty,
                 table_strategy=args.table_strategy,
