@@ -141,10 +141,9 @@ def extract_tables(
 
     tabs = page.find_tables(**kwargs)
     
-    # AUTO-FALLBACK: If the default 'lines' strategy finds a shallow table (1-3 rows)
-    # with many columns (>5), it might be a header with missing horizontal row separators below.
-    # Alternatively, if side borders are found but it still produced <5 rows, horizontal
-    # line separators are likely missing. In these cases, fallback to the 'text' strategy.
+    # AUTO-FALLBACK: If the page has vertical borders OR if the default 'lines' strategy
+    # found a table with many columns, horizontal row separators might be missing.
+    # In these cases, we check if the 'text' strategy finds significantly more rows.
     if strategy is None:
         max_rows = 0
         max_cols = 0
@@ -156,14 +155,16 @@ def extract_tables(
         if clip is not None:
             has_borders = _has_side_borders(page, clip)
             
-        needs_fallback = (1 <= max_rows < 4 and max_cols > 5) or (max_rows < 5 and has_borders)
+        # We try the fallback if there are explicit page borders, or if we already 
+        # know it's a complex grid (>3 columns) that might be truncated.
+        needs_fallback = has_borders or (max_cols > 3)
         
         if needs_fallback:
             text_tabs = page.find_tables(strategy="text", clip=clip)
             if text_tabs.tables:
                 text_max_rows = max([len(t.rows) for t in text_tabs.tables])
                 # Switch if 'text' strategy finds a significantly larger table
-                if text_max_rows > max_rows + 5:
+                if text_max_rows > max_rows + 2:
                     tabs = text_tabs
 
     if not tabs.tables:
