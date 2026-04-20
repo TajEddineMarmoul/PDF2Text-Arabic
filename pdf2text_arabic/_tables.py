@@ -160,10 +160,10 @@ def extract_tables(
         needs_fallback = has_borders or (max_cols > 3)
         
         if needs_fallback:
-            text_tabs = page.find_tables(strategy="text", clip=clip)
+            text_tabs = page.find_tables(vertical_strategy="lines", horizontal_strategy="text", clip=clip)
             if text_tabs.tables:
                 text_max_rows = max([len(t.rows) for t in text_tabs.tables])
-                # Switch if 'text' strategy finds a significantly larger table
+                # Switch if the mixed strategy finds a significantly larger table
                 if text_max_rows > max_rows + 2:
                     tabs = text_tabs
 
