@@ -90,6 +90,39 @@ def _extract_cell_text(page, cell_bbox, extract_ref: str = "", rawdict=None) -> 
     return result
 
 
+def _has_side_borders(page: fitz.Page, clip: fitz.Rect) -> bool:
+    """True if the page contains vertical lines/segments at the left and right margins.
+    
+    Handles tables that have vertical lines but are missing horizontal borders 
+    (e.g., top, bottom, or row separators).
+    """
+    drawings = page.get_drawings()
+    left_segments = 0
+    right_segments = 0
+    
+    # We look for vertical elements in the outer 15% of the clip width
+    w = clip.width
+    left_zone = (clip.x0, clip.x0 + w * 0.15)
+    right_zone = (clip.x1 - w * 0.15, clip.x1)
+    
+    for d in drawings:
+        r = d["rect"]
+        # Must be inside our vertical clip
+        if not (clip.y0 <= r.y0 <= clip.y1):
+            continue
+            
+        # Vertical segment check: width < 5 (includes lines and thin rects)
+        if r.width < 5:
+            if left_zone[0] <= r.x0 <= left_zone[1]:
+                left_segments += r.height
+            elif right_zone[0] <= r.x0 <= right_zone[1]:
+                right_segments += r.height
+                
+    # If we found substantial vertical markings on BOTH sides (at least 200px total height),
+    # we consider it a structured table container.
+    return left_segments > 200 and right_segments > 200
+
+
 def extract_tables(
     page,
     clip=None,
@@ -108,8 +141,10 @@ def extract_tables(
 
     tabs = page.find_tables(**kwargs)
     
-    # AUTO-FALLBACK: If we found a shallow table (1-3 rows) with many columns, 
-    # it is likely a header with a borderless body (common in Customs Tariff docs).
+    # AUTO-FALLBACK: If the default 'lines' strategy finds a shallow table (1-3 rows)
+    # with many columns (>5), it might be a header with missing horizontal row separators below.
+    # Alternatively, if side borders are found but it still produced <5 rows, horizontal
+    # line separators are likely missing. In these cases, fallback to the 'text' strategy.
     if strategy is None:
         max_rows = 0
         max_cols = 0
@@ -117,11 +152,17 @@ def extract_tables(
             max_rows = max(len(t.rows) for t in tabs.tables)
             max_cols = max(len(t.header.cells) for t in tabs.tables)
             
-        if 1 <= max_rows < 4 and max_cols > 5:
+        has_borders = False
+        if clip is not None:
+            has_borders = _has_side_borders(page, clip)
+            
+        needs_fallback = (1 <= max_rows < 4 and max_cols > 5) or (max_rows < 5 and has_borders)
+        
+        if needs_fallback:
             text_tabs = page.find_tables(strategy="text", clip=clip)
             if text_tabs.tables:
                 text_max_rows = max([len(t.rows) for t in text_tabs.tables])
-                # Only switch if 'text' strategy finds a significantly larger table
+                # Switch if 'text' strategy finds a significantly larger table
                 if text_max_rows > max_rows + 5:
                     tabs = text_tabs
 
@@ -242,8 +283,14 @@ def _format_rag_table(
         if not any(c.strip() for c in row):
             continue
 
+        # Check if this row looks like a new main heading (e.g. contains "30.01")
+        # usually found in the description column (which could be any column if others are empty)
+        text_content = " ".join(c.strip() for c in row if c.strip())
+        is_heading = bool(re.search(r'\b\d{2}\.\d{2}\b', text_content))
+
         # If the first column (usually ID) is empty, merge text into the previous row
-        if not row[0].strip() and merged_rows:
+        # UNLESS it is a new main heading.
+        if not row[0].strip() and merged_rows and not is_heading:
             prev = merged_rows[-1]
             for j in range(1, min(len(row), len(prev))):
                 if row[j].strip():
