@@ -90,39 +90,6 @@ def _extract_cell_text(page, cell_bbox, extract_ref: str = "", rawdict=None) -> 
     return result
 
 
-def _has_side_borders(page: fitz.Page, clip: fitz.Rect) -> bool:
-    """True if the page contains vertical lines/segments at the left and right margins.
-    
-    Handles tables that have vertical lines but are missing horizontal borders 
-    (e.g., top, bottom, or row separators).
-    """
-    drawings = page.get_drawings()
-    left_segments = 0
-    right_segments = 0
-    
-    # We look for vertical elements in the outer 15% of the clip width
-    w = clip.width
-    left_zone = (clip.x0, clip.x0 + w * 0.15)
-    right_zone = (clip.x1 - w * 0.15, clip.x1)
-    
-    for d in drawings:
-        r = d["rect"]
-        # Must be inside our vertical clip
-        if not (clip.y0 <= r.y0 <= clip.y1):
-            continue
-            
-        # Vertical segment check: width < 5 (includes lines and thin rects)
-        if r.width < 5:
-            if left_zone[0] <= r.x0 <= left_zone[1]:
-                left_segments += r.height
-            elif right_zone[0] <= r.x0 <= right_zone[1]:
-                right_segments += r.height
-                
-    # If we found substantial vertical markings on BOTH sides (at least 200px total height),
-    # we consider it a structured table container.
-    return left_segments > 200 and right_segments > 200
-
-
 def extract_tables(
     page,
     clip=None,
@@ -141,43 +108,35 @@ def extract_tables(
 
     tabs = page.find_tables(**kwargs)
     
-    # AUTO-FALLBACK: If the page has vertical borders OR if the default 'lines' strategy
-    # found a table with many columns, horizontal row separators might be missing.
-    # In these cases, we check if the 'text' strategy finds significantly more rows.
-    if strategy is None:
-        max_rows = 0
-        max_cols = 0
-        if tabs.tables:
-            max_rows = max(len(t.rows) for t in tabs.tables)
-            max_cols = max(len(t.header.cells) for t in tabs.tables)
-            
-        has_borders = False
-        if clip is not None:
-            has_borders = _has_side_borders(page, clip)
-            
-        # We try the fallback if there are explicit page borders, or if we already 
-        # know it's a complex grid (>3 columns) that might be truncated.
-        needs_fallback = has_borders or (max_cols > 3)
-        
-        if needs_fallback:
-            text_tabs = page.find_tables(vertical_strategy="lines", horizontal_strategy="text", clip=clip)
-            if text_tabs.tables:
-                text_max_rows = max([len(t.rows) for t in text_tabs.tables])
-                # Switch if the mixed strategy finds a significantly larger table
-                if text_max_rows > max_rows + 2:
-                    tabs = text_tabs
-
-    if not tabs.tables:
-        return [], [], None
-
-    # New Rule: Must have at least 2 rows to be considered a table.
-    # 1-row detections are usually just justified text lines.
     candidates = []
-    for t in tabs.tables:
-        rows = len(t.rows)
-        if rows >= 2:
-            candidates.append(t)
+    
+    # Identify initial candidates from the default strategy
+    initial_tables = [t for t in tabs.tables if len(t.rows) >= 2]
+    
+    if strategy is None and clip is not None:
+        # TARGETED FALLBACK: For each valid table found, check if it's artificially truncated
+        # due to missing horizontal lines by scanning its specific vertical column with a mixed strategy.
+        for t in initial_tables:
+            # Define a vertical column clip based on the table's X-coordinates and starting Y
+            x0 = max(clip.x0, t.bbox[0] - 10)
+            x1 = min(clip.x1, t.bbox[2] + 10)
+            y0 = max(clip.y0, t.bbox[1] - 10)
+            col_clip = fitz.Rect(x0, y0, x1, clip.y1)
             
+            mixed_tabs = page.find_tables(vertical_strategy="lines", horizontal_strategy="text", clip=col_clip)
+            
+            best_t = t
+            if mixed_tabs.tables:
+                # Find the table with the most rows in this column
+                for mt in mixed_tabs.tables:
+                    # Make sure it's actually the same table (similar column count and position)
+                    if len(mt.rows) > len(best_t.rows) + 2 and abs(mt.bbox[0] - t.bbox[0]) < 50:
+                        best_t = mt
+            
+            candidates.append(best_t)
+    else:
+        candidates = initial_tables
+
     if not candidates:
         return [], [], None
 
