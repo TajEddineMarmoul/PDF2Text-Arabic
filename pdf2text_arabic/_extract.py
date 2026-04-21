@@ -735,11 +735,18 @@ def extract_page(
     is_empty_selectable = _is_empty_page(page, clip)
     mixed_regions = _image_only_regions(page, clip)
 
+    # USER REQUEST: If the page has ANY part that needs OCR (mixed_regions), 
+    # or if the page is completely empty, we upgrade the entire page to full OCR.
+    # This prevents messy merging of PyMuPDF text and Gemini text.
+    effective_mode = on_empty
+    if on_empty == "auto" and (is_empty_selectable or mixed_regions):
+        effective_mode = "ocr"
+
     pieces: list[tuple[float, float, float, float, str]] = []
     last_table_state = None
 
     # 4. SELECTABLE EXTRACTION
-    if on_empty != "ocr":
+    if effective_mode != "ocr":
         table_entries, t_bboxes, last_table_state = extract_tables(
             page, clip=clip, strategy=table_strategy, prev_table_state=prev_table_state
         )
@@ -782,12 +789,7 @@ def extract_page(
                 pieces.append((by0, by1, bx0, bx1, "\n".join(lines_text)))
 
     # 5. OCR EXTRACTION
-    if on_empty == "auto":
-        if mixed_regions:
-            ocr_results = run_ocr(page, mixed_regions, model=gemini_model)
-            for (y_top, ocr_text), region in zip(ocr_results, mixed_regions):
-                pieces.append((y_top, region.y1, region.x0, region.x1, ocr_text))
-    elif on_empty == "ocr":
+    if effective_mode == "ocr":
         ocr_results = run_ocr(page, [clip], model=gemini_model)
         for y_top, ocr_text in ocr_results:
             pieces.append((y_top, clip.y1, clip.x0, clip.x1, ocr_text))
