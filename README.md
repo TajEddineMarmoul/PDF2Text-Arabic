@@ -145,7 +145,13 @@ This format is structurally robust for LLM ingestion (RAG pipelines) because it 
 The extraction engine features a "Targeted Cascade Fallback" designed specifically for complex, poorly-drawn official documents (e.g., Moroccan Customs Tariffs or Financial Laws):
 - **Missing Horizontal Lines:** If a table lacks row dividers (causing standard parsers to stop after the header), the engine dynamically isolates the exact width of the table and re-scans the column using text-alignment to perfectly capture the missing rows.
 - **Topless & Bottomless Tables:** If a table spans an entire page with absolutely no horizontal borders (e.g., Page 18 of the 2023 Finance Law), the engine automatically detects the vertical column lines and extracts the data without hallucinating a fake header.
+
+  <img src="assets/table_borderless.png" width="400" alt="Borderless Table Example" />
+
 - **Side-by-Side & Embedded Tables:** The fallback logic strictly adheres to physical bounding boxes. It successfully isolates independent tables floating next to each other (e.g., Page 58) or embedded inside article text (e.g., Page 24, 25) without merging them into a garbled, page-wide grid.
+
+  <img src="assets/table_side_by_side.png" width="400" alt="Side-by-Side Table Example" />
+  <img src="assets/table_nested.png" width="400" alt="Nested Table Example" />
 
 ### Footer detection
 
