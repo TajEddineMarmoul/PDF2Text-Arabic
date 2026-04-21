@@ -19,14 +19,12 @@ DEFAULT_GEMINI_MODEL = "gemini-3-flash-preview"
 _GEMINI_OCR_PROMPT = """You are an expert OCR system specialized in extracting complex official Arabic documents, including legal, technical, and administrative records. Extract all Arabic text exactly as it appears without translating or summarizing. Do not auto-correct spelling.
 
 CRITICAL TABLE INSTRUCTIONS:
-Do NOT use standard Markdown table formatting (do not use the | pipe character). Instead, extract every table by representing each row as a vertical block separated by ---. Map the column header to the cell value exactly like this:
----
-Header 1: [Cell Value]
-Header 2: [Cell Value]
-Header 3: [Cell Value]
----
-
-If a cell is empty, do not include that line. Do not generate completely empty table rows.
+Format tables as plain text where each row is on a single line, and columns are explicitly separated by a pipe character ( | ). Do not use Markdown table syntax (no `|---|---|` header dividers).
+If a cell is empty, preserve the structure by using consecutive pipes (e.g., ` | | `). Replace any line breaks within a cell with a space so that every row stays strictly on one line.
+Example output:
+Column 1 Header | Column 2 Header | Column 3 Header
+Row 1 Data 1 | Row 1 Data 2 | Row 1 Data 3
+Row 2 Data 1 | | Row 2 Data 3
 
 EXCLUSIONS:
 Strictly ignore and DO NOT extract any footnotes at the bottom of the page. You must also ignore and remove any superscript footnote markers (e.g., ¹, ², ³) embedded within the main text. Ignore all page headers, page numbers, and stamps. Only extract the core body content.

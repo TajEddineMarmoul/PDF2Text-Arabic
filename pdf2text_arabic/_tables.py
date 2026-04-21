@@ -226,56 +226,35 @@ def _format_rag_table(
     y_top: float,
     results: list[tuple[float, str]],
 ) -> None:
-    """Render a table as row-wise key: value blocks for RAG ingestion.
+    """Render a table in a simple CSV-like format.
 
-    Logical rows that span multiple visual rows (empty ID column) are merged.
-    Blocks are separated by '---' for clean vector database chunking.
+    This avoids the fragility of guessing headers, while still giving 
+    the LLM clear column alignment via the ' | ' separator.
+    Tags are omitted so that artificially split tables (e.g. across pages)
+    naturally flow together in the LLM's context window.
     """
     if not grid or len(grid) < 2:
         return
 
-    headers = grid[0]
-
-    # 1. Merge continued rows (where first column/ID is empty)
-    merged_rows: list[list[str]] = []
-    for row in grid[1:]:
+    blocks: list[str] = []
+    
+    for row in grid:
         # Skip entirely empty rows
         if not any(c.strip() for c in row):
             continue
-
-        # Check if this row looks like a new main heading (e.g. contains "30.01")
-        # usually found in the description column (which could be any column if others are empty)
-        text_content = " ".join(c.strip() for c in row if c.strip())
-        is_heading = bool(re.search(r'\b\d{2}\.\d{2}\b', text_content))
-
-        # If the first column (usually ID) is empty, merge text into the previous row
-        # UNLESS it is a new main heading.
-        if not row[0].strip() and merged_rows and not is_heading:
-            prev = merged_rows[-1]
-            for j in range(1, min(len(row), len(prev))):
-                if row[j].strip():
-                    # Append text with a space
-                    prev[j] = (prev[j] + " " + row[j].strip()).strip()
-        else:
-            merged_rows.append([c.strip() for c in row])
-
-    # 2. Format as Key-Value blocks
-    blocks: list[str] = []
-    for row in merged_rows:
-        block_lines = []
-        for i, cell in enumerate(row):
-            if not cell.strip() or cell.strip() == "...":
-                continue
-            header = (
-                headers[i]
-                if i < len(headers) and headers[i].strip()
-                else f"عمود {i + 1}"
-            )
-            block_lines.append(f"{header}: {cell.strip()}")
-
-        if block_lines:
-            # Wrap in separators for clear RAG retrieval
-            blocks.append("---\n" + "\n".join(block_lines) + "\n---")
-
+            
+        cleaned_cells = []
+        for cell in row:
+            # Replace newlines and tabs with spaces to keep the cell on one line
+            clean_cell = re.sub(r'[\r\n\t]+', ' ', cell.strip())
+            # Replace multiple spaces with a single space
+            clean_cell = re.sub(r' +', ' ', clean_cell)
+            cleaned_cells.append(clean_cell)
+            
+        # Join cells with a clear delimiter
+        row_text = " | ".join(cleaned_cells)
+        blocks.append(row_text)
+        
+    # Only append if we have actual data rows
     if blocks:
-        results.append((y_top, "\n\n".join(blocks)))
+        results.append((y_top, "\n".join(blocks)))
