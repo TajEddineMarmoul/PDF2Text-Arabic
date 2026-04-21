@@ -3,7 +3,7 @@ import os
 import fitz
 from pdf2text_arabic._extract import (
     _compute_clip, _auto_detect_top_y, _auto_detect_bottom_y,
-    _image_only_regions, detect_footer_y, _PAGE_NUMBER_BOTTOM_PCT,
+    _needs_ocr, detect_footer_y, _PAGE_NUMBER_BOTTOM_PCT,
     _is_page_number_text, order_reading_rtl, _is_page_number_block
 )
 from pdf2text_arabic._tables import extract_tables
@@ -42,7 +42,9 @@ def process_full_pdf(pdf_path):
             page.draw_rect(footer_band, color=(0.6, 0.6, 0.6), fill=(0.85, 0.85, 0.85), fill_opacity=0.5, width=0.5)
 
         table_bboxes = [fitz.Rect(t) for t in table_bbox_tuples]
-        ocr_regions = _image_only_regions(page, clip)
+        
+        needs_ocr = _needs_ocr(page, clip)
+        ocr_regions = [clip] if needs_ocr else []
 
         # Smart Footer Detection
         footer_y, guaranteed = detect_footer_y(page, clip, table_bboxes=table_bboxes)
