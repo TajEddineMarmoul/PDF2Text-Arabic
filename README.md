@@ -131,19 +131,21 @@ Structured output for AI/automation:
 
 ### Table extraction
 
-Tables are automatically detected via PyMuPDF's `find_tables()`, extracted with proper Arabic cell ordering, and formatted as row-wise key:value blocks optimized for Vector Databases / RAG pipelines. Merged cells are filled down so every block is self-contained:
+Tables are automatically detected via PyMuPDF's `find_tables()`, extracted with proper Arabic cell ordering, and formatted as plain CSV-style text where columns are explicitly separated by a pipe character (` | `). 
+
+This format is structurally robust for LLM ingestion (RAG pipelines) because it doesn't rely on guessing headers, safely handles empty cells via consecutive pipes (` | | `), and merges split rows naturally. Merged cells are filled down so every row is self-contained:
 
 ```text
-نوع المحتوى: جدول
-الجهات: طنجة – تطوان – الحسيمة
-عدد المقاعد: 2
-مقر الدائرة الانتخابية: ولاية جهة فاس - مكناس
-
-نوع المحتوى: جدول
-الجهات: الشرق
-عدد المقاعد: 2
-مقر الدائرة الانتخابية: ولاية جهة فاس - مكناس
+الرقم | بيان الحسابات | نفقات سنة 2023
+3.2.0.0.4.13.022 | حساب الإنخراط في الهيئات العربية والإسلامية | 137 362 000
+3.2.0.0.4.13.023 | حساب الإنخراط في المؤسسات المتعددة الاطراف | 1 688 070 000
 ```
+
+**Advanced Edge-Case Handling:**
+The extraction engine features a "Targeted Cascade Fallback" designed specifically for complex, poorly-drawn official documents (e.g., Moroccan Customs Tariffs or Financial Laws):
+- **Missing Horizontal Lines:** If a table lacks row dividers (causing standard parsers to stop after the header), the engine dynamically isolates the exact width of the table and re-scans the column using text-alignment to perfectly capture the missing rows.
+- **Topless & Bottomless Tables:** If a table spans an entire page with absolutely no horizontal borders (e.g., Page 18 of the 2023 Finance Law), the engine automatically detects the vertical column lines and extracts the data without hallucinating a fake header.
+- **Side-by-Side & Embedded Tables:** The fallback logic strictly adheres to physical bounding boxes. It successfully isolates independent tables floating next to each other (e.g., Page 58) or embedded inside article text (e.g., Page 24, 25) without merging them into a garbled, page-wide grid.
 
 ### Footer detection
 
