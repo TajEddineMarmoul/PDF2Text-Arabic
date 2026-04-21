@@ -120,10 +120,12 @@ def extract_tables(
             # TARGETED FALLBACK: For each valid table found, check if it's artificially truncated
             # due to missing horizontal lines by scanning its specific vertical column with a mixed strategy.
             for t in initial_tables:
-                # Define a vertical column clip based on the table's X-coordinates and starting Y
+                # Define a vertical column clip based on the table's X-coordinates
+                # We reach 50 pixels above the detected top to catch rows that were excluded
+                # because they lacked a top horizontal border.
                 x0 = max(clip.x0, t.bbox[0] - 10)
                 x1 = min(clip.x1, t.bbox[2] + 10)
-                y0 = max(clip.y0, t.bbox[1] - 10)
+                y0 = max(clip.y0, t.bbox[1] - 50)
                 col_clip = fitz.Rect(x0, y0, x1, clip.y1)
                 
                 mixed_tabs = page.find_tables(vertical_strategy="lines", horizontal_strategy="text", clip=col_clip)
