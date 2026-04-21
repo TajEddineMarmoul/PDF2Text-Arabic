@@ -111,29 +111,44 @@ def extract_tables(
     candidates = []
     
     # Identify initial candidates from the default strategy
-    initial_tables = [t for t in tabs.tables if len(t.rows) >= 2]
+    # We include tables with >= 2 rows, OR 1-row tables if they have > 2 columns 
+    # (which indicates a table whose horizontal row dividers are completely missing).
+    initial_tables = [t for t in tabs.tables if len(t.rows) >= 2 or (len(t.rows) == 1 and len(t.header.cells) > 2)]
     
     if strategy is None and clip is not None:
-        # TARGETED FALLBACK: For each valid table found, check if it's artificially truncated
-        # due to missing horizontal lines by scanning its specific vertical column with a mixed strategy.
-        for t in initial_tables:
-            # Define a vertical column clip based on the table's X-coordinates and starting Y
-            x0 = max(clip.x0, t.bbox[0] - 10)
-            x1 = min(clip.x1, t.bbox[2] + 10)
-            y0 = max(clip.y0, t.bbox[1] - 10)
-            col_clip = fitz.Rect(x0, y0, x1, clip.y1)
-            
-            mixed_tabs = page.find_tables(vertical_strategy="lines", horizontal_strategy="text", clip=col_clip)
-            
-            best_t = t
-            if mixed_tabs.tables:
-                # Find the table with the most rows in this column
-                for mt in mixed_tabs.tables:
-                    # Make sure it's actually the same table (similar column count and position)
-                    if len(mt.rows) > len(best_t.rows) + 2 and abs(mt.bbox[0] - t.bbox[0]) < 50:
-                        best_t = mt
-            
-            candidates.append(best_t)
+        if initial_tables:
+            # TARGETED FALLBACK: For each valid table found, check if it's artificially truncated
+            # due to missing horizontal lines by scanning its specific vertical column with a mixed strategy.
+            for t in initial_tables:
+                # Define a vertical column clip based on the table's X-coordinates and starting Y
+                x0 = max(clip.x0, t.bbox[0] - 10)
+                x1 = min(clip.x1, t.bbox[2] + 10)
+                y0 = max(clip.y0, t.bbox[1] - 10)
+                col_clip = fitz.Rect(x0, y0, x1, clip.y1)
+                
+                mixed_tabs = page.find_tables(vertical_strategy="lines", horizontal_strategy="text", clip=col_clip)
+                
+                best_t = t
+                if mixed_tabs.tables:
+                    # Find the table with the most rows in this column
+                    for mt in mixed_tabs.tables:
+                        # Make sure it's actually the same table (similar column count and position)
+                        if len(mt.rows) > len(best_t.rows) + 2 and abs(mt.bbox[0] - t.bbox[0]) < 50:
+                            best_t = mt
+                
+                candidates.append(best_t)
+        else:
+            # GLOBAL FALLBACK FOR TOPLESS AND BOTTOMLESS TABLES:
+            # If the default strategy found 0 tables, it might be because the table has 
+            # no horizontal lines at all (not even top/bottom borders).
+            # We run the mixed strategy on the whole clip. It will only find a table 
+            # if there are physical vertical lines to form columns.
+            mixed_tabs = page.find_tables(vertical_strategy="lines", horizontal_strategy="text", clip=clip)
+            for t in mixed_tabs.tables:
+                # Accept if it forms a proper grid (multiple columns)
+                if len(t.rows) >= 2 or (len(t.rows) == 1 and len(t.header.cells) > 2):
+                    if len(t.header.cells) > 2:
+                        candidates.append(t)
     else:
         candidates = initial_tables
 
