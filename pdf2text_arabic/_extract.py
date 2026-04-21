@@ -498,8 +498,9 @@ def _image_only_regions(page: fitz.Page, clip: fitz.Rect) -> list[fitz.Rect]:
         # FORCE strict intersection with our manual crop clip
         img_bbox = fitz.Rect(img["bbox"]) & clip
 
-        # If the intersection is tiny or empty (because it was cropped out), skip it
-        if img_bbox.is_empty or img_bbox.width < 10 or img_bbox.height < 10:
+        # If the intersection is tiny (e.g., symbols, footnote markers, logos), skip it.
+        # We increase this threshold to avoid sending 15x15 pixel asterisks to an expensive OCR LLM.
+        if img_bbox.is_empty or img_bbox.width < 20 or img_bbox.height < 15:
             continue
 
         # If an image has significant text on top of it, we skip the OCR
