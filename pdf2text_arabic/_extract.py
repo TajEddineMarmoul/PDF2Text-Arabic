@@ -114,18 +114,8 @@ class ExtractionResult:
 
 
 def _is_superscript(span: dict[str, Any], body_size: float) -> bool:
-    """Return True if *span* looks like a footnote superscript indicator.
-
-    Uses a ratio of the page's dominant body font size so the detection
-    adapts to any document regardless of its base font size.
-    """
-    sz = span.get("size", 0)
-    if sz > _SUPERSCRIPT_ABS_CEIL:
-        return False
-    if body_size > 0 and sz > body_size * _SUPERSCRIPT_SIZE_RATIO:
-        return False
-    text = "".join(c.get("c", "") for c in span.get("chars", [])).strip()
-    return len(text) > 0 and text.isdigit()
+    """Return True if *span* looks like a footnote superscript indicator."""
+    return False
 
 
 def _body_font_size(
@@ -415,68 +405,8 @@ def _is_empty_page(page: fitz.Page, clip: fitz.Rect) -> bool:
     return len(meaningful) < _EMPTY_TEXT_THRESHOLD
 
 
-def _merge_regions_safely(page: fitz.Page, regions: list[fitz.Rect]) -> list[fitz.Rect]:
-    """Merge fragmented image boxes if the gap between them has no selectable text.
-
-    This handles cases like 'khitab malak' where a single logical block of text
-    is broken into dozens of tiny images.
-    """
-    if len(regions) < 2:
-        return regions
-
-    # Sort regions vertically
-    sorted_regions = sorted(regions, key=lambda r: r.y0)
-    merged: list[fitz.Rect] = []
-
-    if not sorted_regions:
-        return []
-
-    current = fitz.Rect(sorted_regions[0])
-
-    for i in range(1, len(sorted_regions)):
-        next_rect = sorted_regions[i]
-
-        # 1. Are they vertically close? (within 25 pixels)
-        gap_height = next_rect.y0 - current.y1
-
-        if gap_height < 25:
-            # 2. Check the gap for selectable text
-            # We create a box that spans the width of both and the height of the gap
-            gap_box = fitz.Rect(
-                min(current.x0, next_rect.x0),
-                current.y1,
-                max(current.x1, next_rect.x1),
-                next_rect.y0
-            )
-
-            # If the gap is tiny (overlap or < 2px), just merge
-            if gap_height <= 2 or not page.get_text("text", clip=gap_box).strip():
-                # Safe to merge
-                current.include_rect(next_rect)
-                continue
-
-        # Not safe to merge or too far apart
-        merged.append(current)
-        current = fitz.Rect(next_rect)
-
-    merged.append(current)
-
-    # Final cleanup: If we still have many regions and the page is mostly empty, 
-    # just take the bounding box of everything.
-    if len(merged) > 10:
-        full_text = page.get_text("text").strip()
-        if len(full_text) < _EMPTY_TEXT_THRESHOLD:
-            # Page is essentially a puzzle of images with no text layer
-            big_box = merged[0]
-            for r in merged[1:]:
-                big_box.include_rect(r)
-            return [big_box]
-
-    return merged
-
-
-def _image_only_regions(page: fitz.Page, clip: fitz.Rect) -> list[fitz.Rect]:
-    """Return surgical bboxes of regions that likely need OCR.
+def _needs_ocr(page: fitz.Page, clip: fitz.Rect) -> bool:
+    """Return True if the page contains images that likely need OCR.
 
     It finds image placements within the clip, then subtracts the area
     occupied by any selectable text to ensure we only OCR the 'unreadable'
@@ -490,17 +420,14 @@ def _image_only_regions(page: fitz.Page, clip: fitz.Rect) -> list[fitz.Rect]:
         if b[6] == 0 and b[4].strip()  # type 0 is text
     ]
 
-    regions: list[fitz.Rect] = []
-
     # 2. Inspect image objects
     image_infos: list[dict[str, Any]] = page.get_image_info()  # type: ignore[assignment]
     for img in image_infos:
         # FORCE strict intersection with our manual crop clip
         img_bbox = fitz.Rect(img["bbox"]) & clip
 
-        # If the intersection is tiny (e.g., symbols, footnote markers, logos), skip it.
-        # We increase this threshold to avoid sending 15x15 pixel asterisks to an expensive OCR LLM.
-        if img_bbox.is_empty or img_bbox.width < 20 or img_bbox.height < 15:
+        # If the intersection is tiny or empty (because it was cropped out), skip it
+        if img_bbox.is_empty or img_bbox.width < 10 or img_bbox.height < 10:
             continue
 
         # If an image has significant text on top of it, we skip the OCR
@@ -525,10 +452,9 @@ def _image_only_regions(page: fitz.Page, clip: fitz.Rect) -> list[fitz.Rect]:
         # Final safety check: must be inside the clip and have valid size
         final_bbox = surgical_bbox & clip
         if not final_bbox.is_empty and final_bbox.width > 5 and final_bbox.height > 5:
-            regions.append(final_bbox)
+            return True
 
-    # 3. Merge fragmented regions safely
-    return _merge_regions_safely(page, regions)
+    return False
 
 
 
