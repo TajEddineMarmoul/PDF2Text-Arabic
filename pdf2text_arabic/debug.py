@@ -142,21 +142,6 @@ def draw_page_layout(
     # 3. Draw
     FONT_SIZE = 6
     BG_H = 8
-    
-    # If the page has ANY ocr regions, the whole page will be fallback-OCR'd.
-    # Highlight this to the user by drawing a box around the entire clip.
-    if ocr_regions:
-        page.draw_rect(clip, color=(1, 0, 1), width=4, dashes="[5 5]")
-        # Add a prominent label
-        page.draw_rect(fitz.Rect(clip.x0, clip.y0, clip.x0 + 80, clip.y0 + 12), color=(1, 0, 1), fill=(1, 0, 1))
-        page.insert_text(
-            (clip.x0 + 2, clip.y0 + 9),
-            "FULL PAGE OCR",
-            color=(1, 1, 1),
-            fontsize=9,
-            fontname="helv-bo",
-        )
-
     for i, it in enumerate(final_order):
         r = it["bbox"]
         if it["type"] == "TABLE":
