@@ -101,8 +101,12 @@ def extract_tables(
     Returns (table_entries, bboxes, last_table_state).
     """
     kwargs = {}
-    if clip is not None:
-        kwargs["clip"] = clip
+    
+    # We pass the full page rect to PyMuPDF to ensure the structural grid
+    # is perfectly analyzed. If we pass the cropped `clip`, PyMuPDF drops
+    # outermost columns because their headers were cropped off!
+    kwargs["clip"] = page.rect
+    
     if strategy is not None:
         kwargs["strategy"] = strategy
 
@@ -111,43 +115,14 @@ def extract_tables(
     candidates = []
     
     # Identify initial candidates from the default strategy
-    # We include tables with >= 2 rows, OR 1-row tables if they have > 2 columns 
-    # (which indicates a table whose horizontal row dividers are completely missing).
     initial_tables = [t for t in tabs.tables if len(t.rows) >= 2 or (len(t.rows) == 1 and len(t.header.cells) > 2)]
     
-    if strategy is None and clip is not None:
+    if strategy is None:
         if initial_tables:
-            # TARGETED FALLBACK: For each valid table found, check if it's artificially truncated
-            # due to missing horizontal lines by scanning its specific vertical column with a mixed strategy.
-            for t in initial_tables:
-                # Define a vertical column clip based on the table's X-coordinates
-                # We reach 50 pixels above the detected top to catch rows that were excluded
-                # because they lacked a top horizontal border.
-                x0 = max(clip.x0, t.bbox[0] - 10)
-                x1 = min(clip.x1, t.bbox[2] + 10)
-                y0 = max(clip.y0, t.bbox[1] - 50)
-                col_clip = fitz.Rect(x0, y0, x1, clip.y1)
-                
-                mixed_tabs = page.find_tables(vertical_strategy="lines", horizontal_strategy="text", clip=col_clip)
-                
-                best_t = t
-                if mixed_tabs.tables:
-                    # Find the table with the most rows in this column
-                    for mt in mixed_tabs.tables:
-                        # Make sure it's actually the same table (similar column count and position)
-                        if len(mt.rows) > len(best_t.rows) + 2 and abs(mt.bbox[0] - t.bbox[0]) < 50:
-                            best_t = mt
-                
-                candidates.append(best_t)
+            candidates = initial_tables
         else:
-            # GLOBAL FALLBACK FOR TOPLESS AND BOTTOMLESS TABLES:
-            # If the default strategy found 0 tables, it might be because the table has 
-            # no horizontal lines at all (not even top/bottom borders).
-            # We run the mixed strategy on the whole clip. It will only find a table 
-            # if there are physical vertical lines to form columns.
-            mixed_tabs = page.find_tables(vertical_strategy="lines", horizontal_strategy="text", clip=clip)
+            mixed_tabs = page.find_tables(vertical_strategy="lines", horizontal_strategy="text", clip=page.rect)
             for t in mixed_tabs.tables:
-                # Accept if it forms a proper grid (multiple columns)
                 if len(t.rows) >= 2 or (len(t.rows) == 1 and len(t.header.cells) > 2):
                     if len(t.header.cells) > 2:
                         candidates.append(t)
@@ -160,36 +135,125 @@ def extract_tables(
     results: list[tuple[float, str]] = []
     bboxes: list[tuple] = []
     
-    # Sort candidates by vertical position
     candidates.sort(key=lambda t: t.bbox[1])
 
     for i, table in enumerate(candidates):
-        bboxes.append(table.bbox)
+        # Intersect the table bounding box with the user's clip
+        # so we don't draw debug boxes or process text in the margins.
+        t_bbox = fitz.Rect(table.bbox)
+        if clip is not None:
+            t_bbox = t_bbox & clip
+            if t_bbox.is_empty:
+                continue
+
+        bboxes.append(tuple(t_bbox))
         raw_extract = table.extract()
         table_clip = fitz.Rect(table.bbox)
-        table_rawdict = page.get_text("rawdict", clip=table_clip)
+        # Use the user's clip for rawdict so we don't grab header/footer text!
+        extract_clip = t_bbox if clip is not None else table_clip
+        table_rawdict = page.get_text("rawdict", clip=extract_clip)
 
         grid: list[list[str]] = []
-        merged: list[list[bool]] = []
-        for ri, row in enumerate(table.rows):
-            row_cells = []
-            row_merged = []
-            ncells = len(row.cells)
-            for ci, cell in enumerate(reversed(row.cells)):
+        
+        # MANUAL Y-SLICING FOR 1-ROW TABLES
+        if len(table.rows) == 1 and len(table.header.cells) > 2:
+            rows_map: dict[float, dict[int, str]] = {}
+            ncells = len(table.rows[0].cells)
+            
+            for ci, cell in enumerate(reversed(table.rows[0].cells)):
                 orig_ci = ncells - 1 - ci
-                if cell is None:
-                    row_cells.append("")
-                    row_merged.append(True)
-                else:
-                    ref = raw_extract[ri][orig_ci] if raw_extract[ri][orig_ci] else ""
-                    row_cells.append(
-                        _extract_cell_text(
-                            page, cell, extract_ref=ref, rawdict=table_rawdict
+                if not cell:
+                    continue
+                x0, y0, x1, y1 = cell
+                
+                lines_all: list = []
+                for block in table_rawdict["blocks"]:
+                    if "lines" not in block:
+                        continue
+                    for line in block["lines"]:
+                        filtered_spans = []
+                        for span in line["spans"]:
+                            filtered_chars = []
+                            for ch in span["chars"]:
+                                bb = ch["bbox"]
+                                cx = (bb[0] + bb[2]) / 2
+                                cy = (bb[1] + bb[3]) / 2
+                                if x0 - 0.5 <= cx <= x1 + 0.5 and y0 - 0.5 <= cy <= y1 + 0.5:
+                                    filtered_chars.append(ch)
+                            if filtered_chars:
+                                new_span = dict(span)
+                                new_span["chars"] = filtered_chars
+                                filtered_spans.append(new_span)
+                        if filtered_spans:
+                            new_line = dict(line)
+                            new_line["spans"] = filtered_spans
+                            lines_all.append(new_line)
+
+                if not lines_all:
+                    continue
+                
+                merged = merge_lines_by_y(lines_all)
+                for row in merged:
+                    cy = row["cy"]
+                    text = clean_arabic(build_row_text(row["spans"])).strip()
+                    # Fix lam-alef ligature artifacts
+                    text = re.sub(r"^[\u0600-\u06FF]\s+(?=\d)", "", text)
+                    if text:
+                        # Snap to existing Y within 5 pixels
+                        found_y = None
+                        for ry in rows_map.keys():
+                            if abs(ry - cy) < 5.0:
+                                found_y = ry
+                                break
+                        if found_y is None:
+                            found_y = cy
+                            rows_map[found_y] = {col_idx: "" for col_idx in range(ncells)}
+                        rows_map[found_y][ci] = text
+            
+            sorted_ys = sorted(rows_map.keys())
+            merged: list[list[bool]] = []
+            for ry in sorted_ys:
+                grid.append([rows_map[ry][ci] for ci in range(ncells)])
+                merged.append([False] * ncells)
+                
+        else:
+            # Stretch outermost cells horizontally to ensure we don't lose text
+            # that falls outside PyMuPDF's strict column boundaries.
+            if clip is not None:
+                for row in table.rows:
+                    if not row.cells:
+                        continue
+                    if row.cells[0]:
+                        row.cells[0] = (clip.x0, row.cells[0][1], row.cells[0][2], row.cells[0][3])
+                    if row.cells[-1]:
+                        row.cells[-1] = (row.cells[-1][0], row.cells[-1][1], clip.x1, row.cells[-1][3])
+            
+            merged: list[list[bool]] = []
+            for ri, row in enumerate(table.rows):
+                row_cells = []
+                row_merged = []
+                ncells = len(row.cells)
+                for ci, cell in enumerate(reversed(row.cells)):
+                    orig_ci = ncells - 1 - ci
+                    if cell is None:
+                        row_cells.append("")
+                        row_merged.append(True)
+                    else:
+                        ref = raw_extract[ri][orig_ci] if raw_extract[ri][orig_ci] else ""
+                        row_cells.append(
+                            _extract_cell_text(
+                                page, cell, extract_ref=ref, rawdict=table_rawdict
+                            )
                         )
-                    )
-                    row_merged.append(False)
-            grid.append(row_cells)
-            merged.append(row_merged)
+                        row_merged.append(False)
+                grid.append(row_cells)
+                merged.append(row_merged)
+
+            # Fill down merged cells for self-contained rows
+            for ri in range(1, len(grid)):
+                for ci in range(len(grid[ri])):
+                    if merged[ri][ci] and ci < len(grid[ri - 1]) and grid[ri - 1][ci]:
+                        grid[ri][ci] = grid[ri - 1][ci]
 
         # STITCHING LOGIC
         # If this is the FIRST table on the page, check if it continues from prev page

@@ -114,8 +114,18 @@ class ExtractionResult:
 
 
 def _is_superscript(span: dict[str, Any], body_size: float) -> bool:
-    """Return True if *span* looks like a footnote superscript indicator."""
-    return False
+    """Return True if *span* looks like a footnote superscript indicator.
+
+    Uses a ratio of the page's dominant body font size so the detection
+    adapts to any document regardless of its base font size.
+    """
+    sz = span.get("size", 0)
+    if sz > _SUPERSCRIPT_ABS_CEIL:
+        return False
+    if body_size > 0 and sz > body_size * _SUPERSCRIPT_SIZE_RATIO:
+        return False
+    text = "".join(c.get("c", "") for c in span.get("chars", [])).strip()
+    return len(text) > 0 and text.isdigit()
 
 
 def _body_font_size(
@@ -405,8 +415,8 @@ def _is_empty_page(page: fitz.Page, clip: fitz.Rect) -> bool:
     return len(meaningful) < _EMPTY_TEXT_THRESHOLD
 
 
-def _needs_ocr(page: fitz.Page, clip: fitz.Rect) -> bool:
-    """Return True if the page contains images that likely need OCR.
+def _image_only_regions(page: fitz.Page, clip: fitz.Rect) -> list[fitz.Rect]:
+    """Return image regions that likely need OCR.
 
     It finds image placements within the clip, then subtracts the area
     occupied by any selectable text to ensure we only OCR the 'unreadable'
@@ -422,6 +432,7 @@ def _needs_ocr(page: fitz.Page, clip: fitz.Rect) -> bool:
 
     # 2. Inspect image objects
     image_infos: list[dict[str, Any]] = page.get_image_info()  # type: ignore[assignment]
+    regions: list[fitz.Rect] = []
     for img in image_infos:
         # FORCE strict intersection with our manual crop clip
         img_bbox = fitz.Rect(img["bbox"]) & clip
@@ -452,9 +463,9 @@ def _needs_ocr(page: fitz.Page, clip: fitz.Rect) -> bool:
         # Final safety check: must be inside the clip and have valid size
         final_bbox = surgical_bbox & clip
         if not final_bbox.is_empty and final_bbox.width > 5 and final_bbox.height > 5:
-            return True
+            regions.append(final_bbox)
 
-    return False
+    return regions
 
 
 

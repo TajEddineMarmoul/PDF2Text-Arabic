@@ -297,8 +297,8 @@ def detect_footer_y(
         # Verify that at least one tip is used as a marker (tip followed by dash)
         has_real_marker = False
         for tip in tips:
-            # Look for "digit-" or "digitـ" at the start of a line
-            if re.search(fr"^{re.escape(tip)}[\-ـ]", below_text, re.MULTILINE):
+            # Look for "digit-" or "digit\n-" or "digit -" at the start of a line
+            if re.search(fr"^{re.escape(tip)}\s*[\-ـ]", below_text, re.MULTILINE):
                 has_real_marker = True
                 break
         if has_real_marker:
@@ -311,7 +311,7 @@ def detect_footer_y(
         below_text = page.get_text("text", clip=below_clip).strip()
         has_real_marker = False
         for tip in tips:
-            if re.search(fr"^{re.escape(tip)}[\-ـ]", below_text, re.MULTILINE):
+            if re.search(fr"^{re.escape(tip)}\s*[\-ـ]", below_text, re.MULTILINE):
                 has_real_marker = True
                 break
         if has_real_marker:

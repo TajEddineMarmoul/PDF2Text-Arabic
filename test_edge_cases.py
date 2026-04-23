@@ -60,9 +60,11 @@ def test_pdf_edge_cases(pdf_path):
             page.draw_rect(footer_band, color=(0.6, 0.6, 0.6), fill=(0.85, 0.85, 0.85), fill_opacity=0.5, width=0.5)
 
         table_bboxes = [fitz.Rect(t) for t in table_bbox_tuples]
+        
         ocr_regions = _image_only_regions(page, clip)
+        needs_ocr = bool(ocr_regions)
 
-        print(f"    OCR Regions: {len(ocr_regions)}")
+        print(f"    Needs OCR: {needs_ocr}")
         print(f"    Tables: {len(table_bboxes)}")
 
 

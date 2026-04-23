@@ -197,4 +197,4 @@ def draw_page_layout(
         )
 
     pix = page.get_pixmap(dpi=dpi)
-    display(Image(data=pix.tobytes("png")))
+    pix.save(f'page_{page.number + 1}_debug.png')
