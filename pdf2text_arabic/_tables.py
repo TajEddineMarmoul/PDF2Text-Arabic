@@ -120,36 +120,35 @@ def extract_tables(
             # TARGETED FALLBACK: For each valid table found, check if it's artificially truncated
             # due to missing horizontal lines by scanning its specific vertical column with a mixed strategy.
             for t in initial_tables:
-                # Define a vertical column clip based on the table's X-coordinates
-                # We reach 50 pixels above the detected top to catch rows that were excluded
-                # because they lacked a top horizontal border.
-                x0 = max(clip.x0, t.bbox[0] - 10)
-                x1 = min(clip.x1, t.bbox[2] + 10)
-                y0 = max(clip.y0, t.bbox[1] - 50)
-                col_clip = fitz.Rect(x0, y0, x1, clip.y1)
+                # We use a slightly wider horizontal scan but remain vertically bounded.
+                # If the table is already wide (>50% of page), we scan the full width.
+                p_width = page.rect.width
+                t_width = t.bbox[2] - t.bbox[0]
                 
+                if t_width > p_width * 0.5:
+                    x0, x1 = page.rect.x0, page.rect.x1
+                else:
+                    x0, x1 = max(clip.x0, t.bbox[0] - 20), min(clip.x1, t.bbox[2] + 20)
+                
+                col_clip = fitz.Rect(x0, clip.y0, x1, clip.y1)
                 mixed_tabs = page.find_tables(vertical_strategy="lines", horizontal_strategy="text", clip=col_clip)
                 
                 best_t = t
                 if mixed_tabs.tables:
-                    # Find the table with the most rows in this column
                     for mt in mixed_tabs.tables:
-                        # Make sure it's actually the same table (similar column count and position)
-                        if len(mt.rows) > len(best_t.rows) + 2 and abs(mt.bbox[0] - t.bbox[0]) < 50:
-                            best_t = mt
-                
+                        # STABILITY GATE: Only accept technical tables (>=6 columns)
+                        # to avoid incorrectly merging article text paragraphs.
+                        if len(mt.header.cells) >= 6 and len(mt.rows) > len(best_t.rows) + 2:
+                            if abs(mt.bbox[0] - t.bbox[0]) < 100:
+                                best_t = mt
                 candidates.append(best_t)
         else:
-            # GLOBAL FALLBACK FOR TOPLESS AND BOTTOMLESS TABLES:
-            # If the default strategy found 0 tables, it might be because the table has 
-            # no horizontal lines at all (not even top/bottom borders).
-            # We run the mixed strategy on the whole clip. It will only find a table 
-            # if there are physical vertical lines to form columns.
-            mixed_tabs = page.find_tables(vertical_strategy="lines", horizontal_strategy="text", clip=clip)
+            # GLOBAL FALLBACK: Scan the whole page for tables PyMuPDF missed entirely.
+            mixed_tabs = page.find_tables(vertical_strategy="lines", horizontal_strategy="text", clip=page.rect)
             for t in mixed_tabs.tables:
-                # Accept if it forms a proper grid (multiple columns)
-                if len(t.rows) >= 2 or (len(t.rows) == 1 and len(t.header.cells) > 2):
-                    if len(t.header.cells) > 2:
+                # STABILITY GATE: Only accept technical tables (>=6 columns)
+                if len(t.header.cells) >= 6:
+                    if len(t.rows) >= 2 or (len(t.rows) == 1 and len(t.header.cells) > 2):
                         candidates.append(t)
     else:
         candidates = initial_tables
@@ -164,10 +163,24 @@ def extract_tables(
     candidates.sort(key=lambda t: t.bbox[1])
 
     for i, table in enumerate(candidates):
-        bboxes.append(table.bbox)
+        t_bbox = fitz.Rect(table.bbox)
+        if clip is not None:
+            t_bbox = t_bbox & clip
+            if t_bbox.is_empty:
+                continue
+            
+            # GREEDY WIDTH: Stretch table to margins if already wide
+            if (t_bbox.width > page.rect.width * 0.6) or (abs(t_bbox.x0 - clip.x0) < 100 and abs(t_bbox.x1 - clip.x1) < 100):
+                gx0 = clip.x0 if abs(t_bbox.x0 - clip.x0) < 100 else t_bbox.x0
+                gx1 = clip.x1 if abs(t_bbox.x1 - clip.x1) < 100 else t_bbox.x1
+                t_bbox = fitz.Rect(gx0, t_bbox.y0, gx1, t_bbox.y1)
+
+        bboxes.append(tuple(t_bbox))
         raw_extract = table.extract()
         table_clip = fitz.Rect(table.bbox)
-        table_rawdict = page.get_text("rawdict", clip=table_clip)
+        # Use t_bbox (stretched) for rawdict to capture margin text
+        extract_clip = t_bbox if clip is not None else table_clip
+        table_rawdict = page.get_text("rawdict", clip=extract_clip)
 
         grid: list[list[str]] = []
         merged: list[list[bool]] = []
@@ -181,10 +194,16 @@ def extract_tables(
                     row_cells.append("")
                     row_merged.append(True)
                 else:
+                    # Stretch outermost cells horizontally
+                    cx0, cy0, cx1, cy1 = cell
+                    if abs(cx0 - table.bbox[0]) < 5: cx0 = t_bbox.x0
+                    if abs(cx1 - table.bbox[2]) < 5: cx1 = t_bbox.x1
+                    stretched_cell = (cx0, cy0, cx1, cy1)
+                    
                     ref = raw_extract[ri][orig_ci] if raw_extract[ri][orig_ci] else ""
                     row_cells.append(
                         _extract_cell_text(
-                            page, cell, extract_ref=ref, rawdict=table_rawdict
+                            page, stretched_cell, extract_ref=ref, rawdict=table_rawdict
                         )
                     )
                     row_merged.append(False)
