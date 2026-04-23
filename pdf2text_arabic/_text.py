@@ -89,9 +89,16 @@ def build_row_text(spans: list[dict]) -> str:
     if not all_chars:
         return ""
 
-    arabic_count = sum(1 for c in all_chars if is_arabic(c["c"]))
-    total_text = sum(1 for c in all_chars if c["c"].strip())
-    is_rtl = arabic_count > (total_text - arabic_count)
+    # Heuristic for RTL: count Arabic chars vs others.
+    # We ignore common table filler/formatting chars to avoid false LTR detection
+    # on lines that are mostly dots or dashes but contain Arabic text.
+    meaningful_chars = [c["c"] for c in all_chars if c["c"].strip() and c["c"] not in ".-_"]
+    if not meaningful_chars:
+        # Fallback to all non-empty chars if everything was a filler
+        meaningful_chars = [c["c"] for c in all_chars if c["c"].strip()]
+        
+    arabic_count = sum(1 for c in meaningful_chars if is_arabic(c))
+    is_rtl = arabic_count > (len(meaningful_chars) - arabic_count)
 
     if is_rtl:
         sorted_chars = sorted(all_chars, key=lambda c: -c["bbox"][0])

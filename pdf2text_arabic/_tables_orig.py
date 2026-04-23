@@ -120,40 +120,8 @@ def extract_tables(
     
     if strategy is None:
         if initial_tables:
-            # TARGETED FALLBACK: For each valid table found, check if it's artificially truncated
-            # due to missing horizontal lines by scanning its specific vertical column with a mixed strategy.
-            for t in initial_tables:
-                # Define a vertical column clip based on the table's X-coordinates
-                # We reach 50 pixels above the detected top to catch rows that were excluded
-                # because they lacked a top horizontal border.
-                x0 = max(clip.x0, t.bbox[0] - 10) if clip else t.bbox[0] - 10
-                x1 = min(clip.x1, t.bbox[2] + 10) if clip else t.bbox[2] + 10
-                y0 = max(clip.y0, t.bbox[1] - 50) if clip else t.bbox[1] - 50
-                # Scan all the way to the bottom of the allowed area to catch missing bottom rows.
-                y1 = clip.y1 if clip else page.rect.y1
-                col_clip = fitz.Rect(x0, y0, x1, y1)
-                
-                # We pass the original table's horizontal boundaries as explicit vertical lines
-                # to ensure the re-scan doesn't 'shrink' the table and lose outer columns.
-                v_boundaries = [t.bbox[0], t.bbox[2]]
-                mixed_tabs = page.find_tables(
-                    vertical_strategy="lines", 
-                    horizontal_strategy="text", 
-                    clip=col_clip,
-                    vertical_lines=v_boundaries
-                )
-                
-                best_t = t
-                if mixed_tabs.tables:
-                    # Find the table with the most rows in this column
-                    for mt in mixed_tabs.tables:
-                        # Make sure it's actually the same table (similar column count and position)
-                        if len(mt.rows) > len(best_t.rows) + 2 and abs(mt.bbox[0] - t.bbox[0]) < 50:
-                            best_t = mt
-                
-                candidates.append(best_t)
+            candidates = initial_tables
         else:
-            # GLOBAL FALLBACK FOR TOPLESS AND BOTTOMLESS TABLES:
             mixed_tabs = page.find_tables(vertical_strategy="lines", horizontal_strategy="text", clip=page.rect)
             for t in mixed_tabs.tables:
                 if len(t.rows) >= 2 or (len(t.rows) == 1 and len(t.header.cells) > 2):
