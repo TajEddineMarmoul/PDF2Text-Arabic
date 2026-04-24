@@ -90,6 +90,135 @@ def _extract_cell_text(page, cell_bbox, extract_ref: str = "", rawdict=None) -> 
     return result
 
 
+def _slice_region_into_rows(rawdict: dict, table, tx0: float, tx1: float) -> list[list[str]]:
+    """Slice a rawdict region into rows manually aligned with table columns."""
+    rows_map: dict[float, dict[int, str]] = {}
+    ncells = len(table.header.cells)
+    
+    col_bounds = []
+    for cell in table.rows[0].cells:
+        if cell:
+            col_bounds.append((cell[0], cell[2]))
+        else:
+            col_bounds.append((None, None))
+            
+    for ci, bounds in enumerate(reversed(col_bounds)):
+        if bounds[0] is None:
+            continue
+        cx0, cx1 = bounds
+        
+        lines_all = []
+        for block in rawdict.get("blocks", []):
+            if "lines" not in block:
+                continue
+            for line in block["lines"]:
+                filtered_spans = []
+                for span in line["spans"]:
+                    filtered_chars = []
+                    for ch in span["chars"]:
+                        bb = ch["bbox"]
+                        char_cx = (bb[0] + bb[2]) / 2
+                        if cx0 - 2.0 <= char_cx <= cx1 + 2.0:
+                            filtered_chars.append(ch)
+                    if filtered_chars:
+                        new_span = dict(span)
+                        new_span["chars"] = filtered_chars
+                        filtered_spans.append(new_span)
+                if filtered_spans:
+                    new_line = dict(line)
+                    new_line["spans"] = filtered_spans
+                    lines_all.append(new_line)
+
+        if not lines_all:
+            continue
+        
+        merged = merge_lines_by_y(lines_all)
+        for row in merged:
+            cy = row["cy"]
+            text = clean_arabic(build_row_text(row["spans"])).strip()
+            text = re.sub(r"^[\u0600-\u06FF]\s+(?=\d)", "", text)
+            if text:
+                found_y = None
+                for ry in rows_map.keys():
+                    if abs(ry - cy) < 5.0:
+                        found_y = ry
+                        break
+                if found_y is None:
+                    found_y = cy
+                    rows_map[found_y] = {col_idx: "" for col_idx in range(ncells)}
+                rows_map[found_y][ci] = text
+
+    sorted_ys = sorted(rows_map.keys())
+    grid = []
+    for ry in sorted_ys:
+        grid.append([rows_map[ry][ci] for ci in range(ncells)])
+    return grid
+
+
+
+def _slice_region_into_rows(rawdict: dict, table, tx0: float, tx1: float) -> list[list[str]]:
+    rows_map: dict[float, dict[int, str]] = {}
+    ncells = len(table.header.cells)
+    
+    col_bounds = []
+    for cell in table.rows[0].cells:
+        if cell:
+            col_bounds.append((cell[0], cell[2]))
+        else:
+            col_bounds.append((None, None))
+            
+    for ci, bounds in enumerate(reversed(col_bounds)):
+        if bounds[0] is None:
+            continue
+        cx0, cx1 = bounds
+        
+        lines_all = []
+        for block in rawdict.get("blocks", []):
+            if "lines" not in block:
+                continue
+            for line in block["lines"]:
+                filtered_spans = []
+                for span in line["spans"]:
+                    filtered_chars = []
+                    for ch in span["chars"]:
+                        bb = ch["bbox"]
+                        char_cx = (bb[0] + bb[2]) / 2
+                        if cx0 - 2.0 <= char_cx <= cx1 + 2.0:
+                            filtered_chars.append(ch)
+                    if filtered_chars:
+                        new_span = dict(span)
+                        new_span["chars"] = filtered_chars
+                        filtered_spans.append(new_span)
+                if filtered_spans:
+                    new_line = dict(line)
+                    new_line["spans"] = filtered_spans
+                    lines_all.append(new_line)
+
+        if not lines_all:
+            continue
+        
+        merged = merge_lines_by_y(lines_all)
+        for row in merged:
+            cy = row["cy"]
+            text = clean_arabic(build_row_text(row["spans"])).strip()
+            text = re.sub(r"^[؀-ۿ]\s+(?=\d)", "", text)
+            if text:
+                found_y = None
+                for ry in rows_map.keys():
+                    if abs(ry - cy) < 5.0:
+                        found_y = ry
+                        break
+                if found_y is None:
+                    found_y = cy
+                    rows_map[found_y] = {col_idx: "" for col_idx in range(ncells)}
+                rows_map[found_y][ci] = text
+
+    sorted_ys = sorted(rows_map.keys())
+    grid = []
+    for ry in sorted_ys:
+        grid.append([rows_map[ry][ci] for ci in range(ncells)])
+    return grid
+
 def extract_tables(
     page,
     clip=None,
@@ -120,6 +249,13 @@ def extract_tables(
             # TARGETED FALLBACK: For each valid table found, check if it's artificially truncated
             # due to missing horizontal lines by scanning its specific vertical column with a mixed strategy.
             for t in initial_tables:
+                # STABILITY GATE: Skip re-scan for narrow/simple tables (<5 columns)
+                # to prevent narrow paragraph boxes (like on Page 25) from being aggressively 
+                # scanned to the bottom of the page and merged with real tables.
+                if len(t.header.cells) < 5:
+                    candidates.append(t)
+                    continue
+
                 # We use a slightly wider horizontal scan but remain vertically bounded.
                 # If the table is already wide (>50% of page), we scan the full width.
                 p_width = page.rect.width
@@ -136,9 +272,8 @@ def extract_tables(
                 best_t = t
                 if mixed_tabs.tables:
                     for mt in mixed_tabs.tables:
-                        # STABILITY GATE: Only accept technical tables (>=6 columns)
-                        # to avoid incorrectly merging article text paragraphs.
-                        if len(mt.header.cells) >= 6 and len(mt.rows) > len(best_t.rows) + 2:
+                        # STABILITY GATE: Only accept the fallback table if it preserves all columns
+                        if len(mt.header.cells) >= len(t.header.cells) and len(mt.rows) > len(best_t.rows) + 2:
                             if abs(mt.bbox[0] - t.bbox[0]) < 100:
                                 best_t = mt
                 candidates.append(best_t)
@@ -146,8 +281,10 @@ def extract_tables(
             # GLOBAL FALLBACK: Scan the whole page for tables PyMuPDF missed entirely.
             mixed_tabs = page.find_tables(vertical_strategy="lines", horizontal_strategy="text", clip=page.rect)
             for t in mixed_tabs.tables:
-                # STABILITY GATE: Only accept technical tables (>=6 columns)
-                if len(t.header.cells) >= 6:
+                # STABILITY GATE: Only accept global fallback tables if they have >=3 columns.
+                # This perfectly rejects false-positive 2-column text layouts (like Page 47),
+                # while correctly capturing real borderless tables (Page 21, 22, 60+).
+                if len(t.header.cells) >= 3:
                     if len(t.rows) >= 2 or (len(t.rows) == 1 and len(t.header.cells) > 2):
                         candidates.append(t)
     else:
@@ -184,31 +321,40 @@ def extract_tables(
 
         grid: list[list[str]] = []
         merged: list[list[bool]] = []
-        for ri, row in enumerate(table.rows):
-            row_cells = []
-            row_merged = []
-            ncells = len(row.cells)
-            for ci, cell in enumerate(reversed(row.cells)):
-                orig_ci = ncells - 1 - ci
-                if cell is None:
-                    row_cells.append("")
-                    row_merged.append(True)
-                else:
-                    # Stretch outermost cells horizontally
-                    cx0, cy0, cx1, cy1 = cell
-                    if abs(cx0 - table.bbox[0]) < 5: cx0 = t_bbox.x0
-                    if abs(cx1 - table.bbox[2]) < 5: cx1 = t_bbox.x1
-                    stretched_cell = (cx0, cy0, cx1, cy1)
-                    
-                    ref = raw_extract[ri][orig_ci] if raw_extract[ri][orig_ci] else ""
-                    row_cells.append(
-                        _extract_cell_text(
-                            page, stretched_cell, extract_ref=ref, rawdict=table_rawdict
+
+        # Check if PyMuPDF improperly grouped multiple rows into a single cell
+        has_newlines = any("\n" in (c or "") for row in raw_extract for c in row)
+
+        if (len(table.rows) == 1 and len(table.header.cells) > 2) or has_newlines:
+            ncells = len(table.header.cells)
+            grid = _slice_region_into_rows(table_rawdict, table, t_bbox.x0, t_bbox.x1)
+            for _ in grid:
+                merged.append([False] * ncells)
+        else:
+            for ri, row in enumerate(table.rows):
+                row_cells = []
+                row_merged = []
+                ncells = len(row.cells)
+                for ci, cell in enumerate(reversed(row.cells)):
+                    orig_ci = ncells - 1 - ci
+                    if cell is None:
+                        row_cells.append("")
+                        row_merged.append(True)
+                    else:
+                        cx0, cy0, cx1, cy1 = cell
+                        if abs(cx0 - table.bbox[0]) < 5: cx0 = t_bbox.x0
+                        if abs(cx1 - table.bbox[2]) < 5: cx1 = t_bbox.x1
+                        stretched_cell = (cx0, cy0, cx1, cy1)
+                        
+                        ref = raw_extract[ri][orig_ci] if raw_extract[ri][orig_ci] else ""
+                        row_cells.append(
+                            _extract_cell_text(
+                                page, stretched_cell, extract_ref=ref, rawdict=table_rawdict
+                            )
                         )
-                    )
-                    row_merged.append(False)
-            grid.append(row_cells)
-            merged.append(row_merged)
+                        row_merged.append(False)
+                grid.append(row_cells)
+                merged.append(row_merged)
 
         # STITCHING LOGIC
         # If this is the FIRST table on the page, check if it continues from prev page
