@@ -17,10 +17,12 @@ from IPython.display import Image, display
 
 from ._extract import (
     _PAGE_NUMBER_BOTTOM_PCT,
+    _body_font_size,
     _compute_clip,
     _image_only_regions,
     _is_page_number_text,
     _is_page_number_block,
+    _is_superscript,
     detect_footer_y,
     order_reading_rtl,
 )
@@ -46,6 +48,7 @@ def draw_page_layout(
         * orange  — full-width (spanning) text blocks
         * green   — right-column text
         * red     — left-column text
+        * maroon  — small numbers (superscripts/footnotes)
 
     When ``crop_top``/``crop_bottom`` are used (manual or auto), the trimmed
     header/footer bands are shaded grey so you can preview what will be dropped.
@@ -86,12 +89,14 @@ def draw_page_layout(
                 clip = fitz.Rect(clip.x0, clip.y0, clip.x1, footer_y - 1)
 
     raw: dict[str, Any] = page.get_text("rawdict", clip=clip)  # type: ignore[assignment]
-    
+    body_size = _body_font_size(raw, table_bbox_tuples)
+
     # Define zones for page number detection relative to the page
     page_num_bottom_zone_y = page.rect.y1 - page.rect.height * _PAGE_NUMBER_BOTTOM_PCT
     page_num_top_zone_y = page.rect.y0 + page.rect.height * _PAGE_NUMBER_BOTTOM_PCT
     
-    text_blocks: list[dict[str, Any]] = []
+    text_items: list[dict[str, Any]] = []
+    superscript_items: list[dict[str, Any]] = []
 
     for b in raw["blocks"]:
         if "lines" not in b:
@@ -125,7 +130,21 @@ def draw_page_layout(
         ):
             continue
 
-        text_blocks.append(b)
+        # Separate block into normal text and reference tips (superscripts)
+        normal_bbox = fitz.Rect()
+        for line in b["lines"]:
+            for span in line["spans"]:
+                span_bbox = fitz.Rect(span["bbox"])
+                if _is_superscript(span, body_size):
+                    superscript_items.append({"bbox": span_bbox, "type": "SUPERSCRIPT"})
+                else:
+                    if normal_bbox.is_empty:
+                        normal_bbox = fitz.Rect(span_bbox)
+                    else:
+                        normal_bbox = normal_bbox | span_bbox
+
+        if not normal_bbox.is_empty:
+            text_items.append({"bbox": normal_bbox, "type": "TEXT"})
 
     # 2. Unified item list
     all_items: list[dict[str, Any]] = []
@@ -133,8 +152,8 @@ def draw_page_layout(
         all_items.append({"bbox": t, "type": "TABLE"})
     for r in ocr_regions:
         all_items.append({"bbox": r, "type": "IMAGE"})
-    for b in text_blocks:
-        all_items.append({"bbox": fitz.Rect(b["bbox"]), "type": "TEXT"})
+    all_items.extend(text_items)
+    all_items.extend(superscript_items)
 
     # Same reading order as extract_page
     final_order = order_reading_rtl(all_items, clip, bbox=lambda x: x["bbox"])
@@ -148,6 +167,8 @@ def draw_page_layout(
             color = (0, 0, 1)
         elif it["type"] == "IMAGE":
             color = (1, 0, 1)
+        elif it["type"] == "SUPERSCRIPT":
+            color = (0.5, 0, 0) # Maroon
         elif r.width > 0.55 * w:
             color = (1, 0.5, 0)
         elif (r.x0 + r.x1) / 2 > mid_x:
@@ -155,9 +176,13 @@ def draw_page_layout(
         else:
             color = (0.8, 0, 0)
 
-        page.draw_rect(r, color=color, width=2)
+        # For superscripts, use a thinner line to not obscure the small digit
+        width = 1 if it["type"] == "SUPERSCRIPT" else 2
+        page.draw_rect(r, color=color, width=width)
 
-        if it["type"] != "TEXT":
+        if it["type"] == "SUPERSCRIPT":
+            label = f"S{i + 1}"
+        elif it["type"] != "TEXT":
             label = f"{it['type'][0]}{i + 1}"
         else:
             label = str(i + 1)
@@ -183,3 +208,4 @@ def draw_page_layout(
 
     pix = page.get_pixmap(dpi=dpi)
     display(Image(data=pix.tobytes("png")))
+

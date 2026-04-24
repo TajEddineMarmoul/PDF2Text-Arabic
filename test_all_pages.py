@@ -4,7 +4,8 @@ import fitz
 from pdf2text_arabic._extract import (
     _compute_clip, _auto_detect_top_y, _auto_detect_bottom_y,
     _image_only_regions, detect_footer_y, _PAGE_NUMBER_BOTTOM_PCT,
-    _is_page_number_text, order_reading_rtl, _is_page_number_block
+    _is_page_number_text, order_reading_rtl, _is_page_number_block,
+    _body_font_size, _is_superscript
 )
 from pdf2text_arabic._tables import extract_tables
 
@@ -44,7 +45,6 @@ def process_full_pdf(pdf_path):
         table_bboxes = [fitz.Rect(t) for t in table_bbox_tuples]
         
         ocr_regions = _image_only_regions(page, clip)
-        needs_ocr = bool(ocr_regions)
 
         # Smart Footer Detection
         footer_y, guaranteed = detect_footer_y(page, clip, table_bboxes=table_bboxes)
@@ -60,9 +60,11 @@ def process_full_pdf(pdf_path):
                 clip = fitz.Rect(clip.x0, clip.y0, clip.x1, footer_y - 1)
 
         raw = page.get_text("rawdict", clip=clip)
+        body_size = _body_font_size(raw, table_bbox_tuples)
         page_num_bottom_zone_y = page.rect.y1 - page.rect.height * _PAGE_NUMBER_BOTTOM_PCT
         
-        text_blocks = []
+        text_items = []
+        superscript_items = []
         for b in raw.get("blocks", []):
             if "lines" not in b: continue
             cx, cy = (b["bbox"][0] + b["bbox"][2]) / 2, (b["bbox"][1] + b["bbox"][3]) / 2
@@ -76,11 +78,27 @@ def process_full_pdf(pdf_path):
                     for l in b.get("lines", []) for s in l.get("spans", []) 
                     if "".join(c.get("c", "") for c in s.get("chars", [])).strip())):
                 continue
-            text_blocks.append(b)
+
+            # Separate block into normal text and reference tips (superscripts)
+            normal_bbox = fitz.Rect()
+            for line in b["lines"]:
+                for span in line["spans"]:
+                    span_bbox = fitz.Rect(span["bbox"])
+                    if _is_superscript(span, body_size):
+                        superscript_items.append({"bbox": span_bbox, "type": "SUPERSCRIPT"})
+                    else:
+                        if normal_bbox.is_empty:
+                            normal_bbox = fitz.Rect(span_bbox)
+                        else:
+                            normal_bbox = normal_bbox | span_bbox
+
+            if not normal_bbox.is_empty:
+                text_items.append({"bbox": normal_bbox, "type": "TEXT"})
 
         all_items = [{"bbox": t, "type": "TABLE"} for t in table_bboxes]
         all_items.extend([{"bbox": r, "type": "IMAGE"} for r in ocr_regions])
-        all_items.extend([{"bbox": fitz.Rect(b["bbox"]), "type": "TEXT"} for b in text_blocks])
+        all_items.extend(text_items)
+        all_items.extend(superscript_items)
 
         final_order = order_reading_rtl(all_items, clip, bbox=lambda x: x["bbox"])
 
@@ -90,12 +108,21 @@ def process_full_pdf(pdf_path):
             r = it["bbox"]
             if it["type"] == "TABLE": color = (0, 0, 1)
             elif it["type"] == "IMAGE": color = (1, 0, 1)
+            elif it["type"] == "SUPERSCRIPT": color = (0.5, 0, 0) # Maroon
             elif r.width > 0.55 * w: color = (1, 0.5, 0)
             elif (r.x0 + r.x1) / 2 > mid_x: color = (0, 0.7, 0)
             else: color = (0.8, 0, 0)
 
-            page.draw_rect(r, color=color, width=2)
-            label = f"{it['type'][0]}{i + 1}" if it["type"] != "TEXT" else str(i + 1)
+            width = 1 if it["type"] == "SUPERSCRIPT" else 2
+            page.draw_rect(r, color=color, width=width)
+            
+            if it["type"] == "SUPERSCRIPT":
+                label = f"S{i + 1}"
+            elif it["type"] != "TEXT":
+                label = f"{it['type'][0]}{i + 1}"
+            else:
+                label = str(i + 1)
+
             bg_w = 10 if len(label) <= 2 else 18
             if r.y0 >= BG_H + 1:
                 bg = fitz.Rect(r.x1 - bg_w, r.y0 - BG_H, r.x1, r.y0)
