@@ -272,8 +272,10 @@ def extract_tables(
                 best_t = t
                 if mixed_tabs.tables:
                     for mt in mixed_tabs.tables:
-                        # STABILITY GATE: Only accept the fallback table if it preserves all columns
-                        if len(mt.header.cells) >= len(t.header.cells) and len(mt.rows) > len(best_t.rows) + 2:
+                        # STABILITY GATE: Only accept the fallback table if it preserves columns
+                        # We allow a small drop (up to 2 columns) to handle noisy initial headers (Page 17),
+                        # but enforce a hard floor of 5 to protect 5-column tables (Page 60+).
+                        if len(mt.header.cells) >= max(5, len(t.header.cells) - 2) and len(mt.rows) > len(best_t.rows) + 2:
                             if abs(mt.bbox[0] - t.bbox[0]) < 100:
                                 best_t = mt
                 candidates.append(best_t)

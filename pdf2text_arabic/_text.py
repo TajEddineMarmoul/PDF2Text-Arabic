@@ -89,17 +89,14 @@ def build_row_text(spans: list[dict]) -> str:
     if not all_chars:
         return ""
 
-    # Heuristic for RTL: count Arabic chars vs others.
-    # We ignore common table filler/formatting chars to avoid false LTR detection
-    # on lines that are mostly dots or dashes but contain Arabic text.
-    meaningful_chars = [c["c"] for c in all_chars if c["c"].strip() and c["c"] not in ".-_"]
-    if not meaningful_chars:
-        # Fallback to all non-empty chars if everything was a filler
-        meaningful_chars = [c["c"] for c in all_chars if c["c"].strip()]
-        
-    arabic_count = sum(1 for c in meaningful_chars if is_arabic(c))
-    is_rtl = arabic_count > (len(meaningful_chars) - arabic_count)
+    # Heuristic for RTL: compare Arabic letters vs Latin letters.
+    # We ignore digits, symbols, and punctuation when deciding the base text direction
+    # because digits can appear in both RTL and LTR contexts and shouldn't flip the line.
+    arabic_count = sum(1 for c in all_chars if is_arabic(c["c"]))
+    latin_count = sum(1 for c in all_chars if c["c"].isalpha() and not is_arabic(c["c"]))
 
+    # Default to RTL in this Arabic-first tool unless Latin letters strictly outnumber Arabic ones
+    is_rtl = arabic_count >= latin_count
     if is_rtl:
         sorted_chars = sorted(all_chars, key=lambda c: -c["bbox"][0])
     else:

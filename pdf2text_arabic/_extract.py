@@ -774,7 +774,7 @@ def extract_page(
 
             lines_text: list[str] = []
             for row in rows:
-                spans = [s for s in row["spans"] if not _is_superscript(s, body_size)]
+                spans = row["spans"]
                 text = build_row_text(spans)
                 text = clean_arabic(text).strip()
                 if not text:
