@@ -731,17 +731,39 @@ def extract_page(
                     apply_crop = False
                     break
             if apply_crop:
-                # 2.1 Extract Footnote content separately
+                # 2.1 Extract ONLY meaningful Footnotes separately
                 footnote_clip = fitz.Rect(clip.x0, footer_y, clip.x1, clip.y1)
                 f_raw = page.get_text("rawdict", clip=footnote_clip)
+                
+                # Determine body tips for filtering
+                # (We do a quick scan of the whole page to find tips)
+                temp_raw = page.get_text("rawdict")
+                temp_body_size = _body_font_size(temp_raw, table_bboxes)
+                tips = set()
+                for b in temp_raw["blocks"]:
+                    if "lines" not in b: continue
+                    for l in b["lines"]:
+                        for s in l["spans"]:
+                            if _is_superscript(s, temp_body_size):
+                                tips.add("".join(c["c"] for c in s["chars"]).strip())
+
                 f_lines = []
                 for b in f_raw["blocks"]:
                     if "lines" not in b: continue
                     merged_f = merge_lines_by_y(b["lines"])
                     for r in merged_f:
                         f_text = clean_arabic(build_row_text(r["spans"])).strip()
-                        if f_text:
-                            f_lines.append(f_text)
+                        if not f_text: continue
+                        
+                        # FILTER: Only keep if it looks like a footnote (starts with a tip)
+                        # OR if it's a continuation of a previously started footnote.
+                        starts_with_tip = any(f_text.startswith(t) for t in tips if t.isdigit())
+                        is_legal_junk = "الجريدة الرسمية" in f_text or _is_page_number_text(f_text)
+                        
+                        if starts_with_tip or (f_lines and not is_legal_junk):
+                            if not is_legal_junk:
+                                f_lines.append(f_text)
+
                 if f_lines:
                     footnote_pieces.append((footer_y, 9999, clip.x0, clip.x1, "\n".join(f_lines)))
 
@@ -791,7 +813,8 @@ def extract_page(
 
             lines_text: list[str] = []
             for row in rows:
-                spans = row["spans"]
+                # Mirror debug logic: filter out reference tips (superscripts)
+                spans = [s for s in row["spans"] if not _is_superscript(s, body_size)]
                 text = build_row_text(spans)
                 text = clean_arabic(text).strip()
                 if not text:
@@ -806,7 +829,27 @@ def extract_page(
                 pieces.append((by0, by1, bx0, bx1, "\n".join(lines_text)))
         
         # Add Footnotes at the end
-        pieces.extend(footnote_pieces)
+        if footnote_pieces:
+            # Clean superscript markers from the footnote content as well
+            cleaned_footnotes = []
+            for f_y, f_y1, f_x0, f_x1, f_text in footnote_pieces:
+                # We re-process the footnote clip to filter spans
+                f_clip = fitz.Rect(f_x0, f_y, f_x1, clip.y1)
+                f_raw = page.get_text("rawdict", clip=f_clip)
+                f_lines = []
+                for b in f_raw["blocks"]:
+                    if "lines" not in b: continue
+                    merged_f = merge_lines_by_y(b["lines"])
+                    for r in merged_f:
+                        # Use body_size for consistency in tip detection
+                        f_spans = [s for s in r["spans"] if not _is_superscript(s, body_size)]
+                        f_row_text = clean_arabic(build_row_text(f_spans)).strip()
+                        if f_row_text:
+                            f_lines.append(f_row_text)
+                if f_lines:
+                    cleaned_footnotes.append((f_y, 9999, f_x0, f_x1, "\n".join(f_lines)))
+            
+            pieces.extend(cleaned_footnotes)
 
     # 5. OCR EXTRACTION
     if effective_mode == "ocr":

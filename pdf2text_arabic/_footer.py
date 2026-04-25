@@ -192,8 +192,10 @@ def _detect_footer_by_smart_markers(page, clip: fitz.Rect, tips: set[str], footn
                         is_marker = True
                             
                     if is_marker:
+                        # Zone Check: Reference must be in the bottom 30% of the page
                         if y > (clip.y0 + (clip.y1 - clip.y0) * 0.2):
-                            gap_rect = fitz.Rect(clip.x0, y - 20, clip.x1, y - 1)
+                            # Tightly-packed footer check (reduced to 2px for Page 149)
+                            gap_rect = fitz.Rect(clip.x0, y - 2, clip.x1, y - 1)
                             if not page.get_text("text", clip=gap_rect).strip():
                                 if best_y is None or y < best_y:
                                     best_y = y
