@@ -17,6 +17,7 @@ from ._extract import (
     _body_font_size,
     _compute_clip,
     _image_only_regions,
+    _is_empty_page,
     _is_page_number_text,
     _is_superscript,
     detect_footer_y,
@@ -35,6 +36,7 @@ def get_debug_pixmap(
     auto_crop_top: bool = True,
     auto_crop_bottom: bool = True,
     detect_footer: bool = True,
+    on_empty: Literal["ignore", "warn", "ocr", "auto"] = "auto",
 ) -> fitz.Pixmap:
     """Perform layout analysis and return a Pixmap with debug overlays."""
     
@@ -55,6 +57,7 @@ def get_debug_pixmap(
     _, table_bbox_tuples, _ = extract_tables(page, clip=clip)
     table_bboxes = [fitz.Rect(t) for t in table_bbox_tuples]
     ocr_regions = _image_only_regions(page, clip)
+    is_empty_selectable = _is_empty_page(page, clip)
 
     # Shaded Footer (Cyan)
     if detect_footer:
@@ -113,10 +116,29 @@ def get_debug_pixmap(
 
     final_order = order_reading_rtl(all_items, clip, bbox=lambda x: x["bbox"])
 
+    full_page_ocr = on_empty == "ocr" or (
+        on_empty == "auto" and (is_empty_selectable or bool(ocr_regions))
+    )
+    trigger_index = None
+    if full_page_ocr and on_empty == "auto":
+        for idx, item in enumerate(final_order):
+            if item["type"] == "IMAGE":
+                trigger_index = idx
+                break
+        if trigger_index is None and is_empty_selectable:
+            trigger_index = 0
+
     # 4. DRAWING
     FONT_SIZE = 6
     BG_H = 8
-    for i, it in enumerate(final_order):
+
+    draw_order = final_order
+    if trigger_index is not None:
+        draw_order = final_order[: trigger_index + 1]
+    elif full_page_ocr:
+        draw_order = []
+
+    for i, it in enumerate(draw_order):
         r = it["bbox"]
         if it["type"] == "TABLE": color = (0, 0, 1) # Blue
         elif it["type"] == "IMAGE": color = (1, 0, 1) # Magenta
@@ -140,6 +162,30 @@ def get_debug_pixmap(
 
         page.draw_rect(bg, color=(1, 1, 1), fill=(1, 1, 1))
         page.insert_text((bg.x0 + 1, text_y), label, color=(0, 0, 1), fontsize=FONT_SIZE, fontname="helv")
+
+    if full_page_ocr:
+        page.draw_rect(
+            clip,
+            color=(1, 0, 1),
+            fill=(1, 0, 1),
+            fill_opacity=0.08,
+            width=3,
+        )
+        if trigger_index is not None and final_order:
+            trigger = final_order[trigger_index]
+            trigger_box = trigger["bbox"]
+            page.draw_rect(trigger_box, color=(1, 0, 0), width=3)
+            label = "FULL PAGE OCR - triggered here"
+            label_y = max(clip.y0 + 14, trigger_box.y0 - 10)
+        elif on_empty == "ocr":
+            label = "FULL PAGE OCR - forced"
+            label_y = clip.y0 + 14
+        else:
+            label = "FULL PAGE OCR - empty/selectable text missing"
+            label_y = clip.y0 + 14
+        label_box = fitz.Rect(clip.x0 + 8, label_y - 12, clip.x0 + 210, label_y + 4)
+        page.draw_rect(label_box, color=(1, 1, 1), fill=(1, 1, 1))
+        page.insert_text((label_box.x0 + 3, label_y), label, color=(1, 0, 0), fontsize=8, fontname="helv")
 
     return page.get_pixmap(dpi=dpi)
 
