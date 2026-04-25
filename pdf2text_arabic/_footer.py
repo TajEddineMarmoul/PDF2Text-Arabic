@@ -41,6 +41,40 @@ def _get_body_size(data: dict) -> float:
     return max(size_chars.items(), key=lambda x: x[1])[0]
 
 
+def _span_text(span: dict) -> str:
+    return "".join(c.get("c", "") for c in span.get("chars", [])).strip()
+
+
+def _has_letters(text: str) -> bool:
+    return any(c.isalpha() for c in text)
+
+
+def _dominant_size(spans: list[dict]) -> float:
+    size_chars: dict[float, int] = {}
+    for span in spans:
+        txt = _span_text(span)
+        if txt:
+            sz = span.get("size", 0)
+            size_chars[sz] = size_chars.get(sz, 0) + len(txt)
+    if not size_chars:
+        return 0
+    return max(size_chars.items(), key=lambda x: x[1])[0]
+
+
+def _reference_marker_number(text: str) -> str | None:
+    compact = re.sub(r"\s+", "", text.strip())
+    match = re.match(r"^(\d+)", compact)
+    if not match:
+        return None
+    num = match.group(1)
+    tail = compact[len(num):]
+    if tail.startswith(("-", "ـ")):
+        return num
+    if len(tail) >= 6 and _has_letters(tail):
+        return num
+    return None
+
+
 def _has_linked_reference_below(
     page: fitz.Page, clip: fitz.Rect, y: float, tips: dict[str, list[float]] | None
 ) -> bool:
@@ -52,8 +86,8 @@ def _has_linked_reference_below(
         text = block[4].strip()
         if by0 <= y + 1:
             continue
-        match = re.match(r"^(\d+)", text)
-        if match and any(tip_y < by0 for tip_y in tips.get(match.group(1), [])):
+        num = _reference_marker_number(text)
+        if num and any(tip_y < by0 for tip_y in tips.get(num, [])):
             return True
     return False
 
@@ -68,7 +102,10 @@ def _has_footer_text_immediately_below(page: fitz.Page, clip: fitz.Rect, y: floa
             continue
         if by0 - y > 25:
             return False
-        return bool(re.match(r'^[\"«]?\s*(\d+|طبقا|أنظر|المادة\s+\d+)', text))
+        return bool(
+            _reference_marker_number(text)
+            or re.match(r'^[\"«]?\s*(طبقا|أنظر|المادة\s+\d+)', text)
+        )
     return False
 
 
@@ -94,31 +131,44 @@ def _collect_superscript_tips(page: fitz.Page, clip: fitz.Rect, body_size: float
     tips: dict[str, list[float]] = {}
     for block in data.get("blocks", []):
         if block.get("type") != 0: continue
+        block_spans = [
+            span
+            for line in block.get("lines", [])
+            for span in line.get("spans", [])
+        ]
+        block_text = "".join(_span_text(span) for span in block_spans)
+        block_dominant_size = _dominant_size(block_spans)
         for line in block.get("lines", []):
+            line_spans = line.get("spans", [])
+            line_text = "".join(_span_text(span) for span in line_spans)
             # Calculate the dominant size in this specific line
-            line_sizes: dict[float, int] = {}
-            for span in line.get("spans", []):
-                txt = "".join(c.get("c", "") for c in span.get("chars", [])).strip()
-                if txt:
-                    sz = span.get("size", 0)
-                    line_sizes[sz] = line_sizes.get(sz, 0) + len(txt)
-            
-            if not line_sizes: continue
-            line_dominant_size = max(line_sizes.items(), key=lambda x: x[1])[0]
+            line_dominant_size = _dominant_size(line_spans)
+            if not line_dominant_size: continue
 
-            for span in line.get("spans", []):
+            for span in line_spans:
                 sz = span.get("size", 0)
-                txt = "".join(c.get("c", "") for c in span.get("chars", [])).strip()
+                txt = _span_text(span)
                 digit_match = "".join(filter(str.isdigit, txt))
                 
                 if digit_match:
-                    # GOLDEN RULE: To be a 'tip', it must be smaller than the neighbors
-                    # in its own line, OR significantly smaller than the page body.
-                    is_tip = False
-                    if sz < line_dominant_size * 0.9:
-                        is_tip = True
-                    elif sz < body_size * 0.85 and sz < 13:
-                        is_tip = True
+                    # A tip must be a small digit attached to larger nearby text.
+                    # This rejects isolated small printed numbers in indexes/tables.
+                    is_tip = (
+                        (
+                            _has_letters(line_text)
+                            and sz < line_dominant_size * 0.9
+                        )
+                        or (
+                            _has_letters(block_text)
+                            and block_dominant_size
+                            and sz < block_dominant_size * 0.9
+                        )
+                        or (
+                            (_has_letters(line_text) or _has_letters(block_text))
+                            and sz < body_size * 0.85
+                            and sz < 13
+                        )
+                    )
                         
                     if is_tip:
                         y_bottom = span["bbox"][3]
@@ -207,8 +257,7 @@ def _detect_footer_by_smart_markers(page, clip: fitz.Rect, tips: dict[str, list[
     
     for b in blocks:
         bx0, by0, bx1, by1, text = b[:5]
-        match = re.match(r"^(\d+)", text.strip())
-        if match:
+        for match in re.finditer(r"^\s*(\d+)", text, flags=re.MULTILINE):
             num = match.group(1)
             # Match per marker number. A reference line is valid if any same-number
             # tip exists above it; keep the latest candidate for that number.
