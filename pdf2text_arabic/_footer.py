@@ -41,13 +41,57 @@ def _get_body_size(data: dict) -> float:
     return max(size_chars.items(), key=lambda x: x[1])[0]
 
 
-def _collect_superscript_tips(page: fitz.Page, clip: fitz.Rect, body_size: float) -> dict[str, float]:
-    """Find all small superscript digits and map them to their LOWEST Y-coordinate."""
+def _has_linked_reference_below(
+    page: fitz.Page, clip: fitz.Rect, y: float, tips: dict[str, list[float]] | None
+) -> bool:
+    if not tips:
+        return False
+    search_clip = fitz.Rect(clip.x0, y, clip.x1, min(clip.y1, y + 240))
+    for block in page.get_text("blocks", clip=search_clip):
+        by0 = block[1]
+        text = block[4].strip()
+        if by0 <= y + 1:
+            continue
+        match = re.match(r"^(\d+)", text)
+        if match and any(tip_y < by0 for tip_y in tips.get(match.group(1), [])):
+            return True
+    return False
+
+
+def _has_footer_text_immediately_below(page: fitz.Page, clip: fitz.Rect, y: float) -> bool:
+    search_clip = fitz.Rect(clip.x0, y, clip.x1, min(clip.y1, y + 40))
+    blocks = sorted(page.get_text("blocks", clip=search_clip), key=lambda b: b[1])
+    for block in blocks:
+        by0 = block[1]
+        text = re.sub(r"\s+", " ", block[4].strip())
+        if not text or by0 <= y + 1:
+            continue
+        if by0 - y > 25:
+            return False
+        return bool(re.match(r'^[\"«]?\s*(\d+|طبقا|أنظر|المادة\s+\d+)', text))
+    return False
+
+
+def _is_footer_separator_y(
+    page: fitz.Page, clip: fitz.Rect, y: float, tips: dict[str, list[float]] | None
+) -> bool:
+    if not (clip.y0 < y < clip.y1):
+        return False
+    if y > (clip.y1 - (clip.height * 0.25)):
+        return True
+    return (
+        _has_footer_text_immediately_below(page, clip, y)
+        and _has_linked_reference_below(page, clip, y, tips)
+    )
+
+
+def _collect_superscript_tips(page: fitz.Page, clip: fitz.Rect, body_size: float) -> dict[str, list[float]]:
+    """Find all small superscript digits and keep every Y-coordinate per number."""
     # Look at the top 90% of the page to find tips (superscripts)
     body_clip = fitz.Rect(clip.x0, clip.y0, clip.x1, clip.y0 + (clip.height * 0.9))
     data = page.get_text("rawdict", clip=body_clip)
     
-    tips: dict[str, float] = {}
+    tips: dict[str, list[float]] = {}
     for block in data.get("blocks", []):
         if block.get("type") != 0: continue
         for line in block.get("lines", []):
@@ -78,16 +122,17 @@ def _collect_superscript_tips(page: fitz.Page, clip: fitz.Rect, body_size: float
                         
                     if is_tip:
                         y_bottom = span["bbox"][3]
-                        # Track the LOWEST point (maximum Y) each reference number appears in the body
-                        if digit_match not in tips or y_bottom > tips[digit_match]:
-                            tips[digit_match] = y_bottom
+                        tips.setdefault(digit_match, []).append(y_bottom)
+    for ys in tips.values():
+        ys.sort()
     return tips
 
 
 def _detect_footer_by_line(
     page: fitz.Page, 
     clip: fitz.Rect, 
-    table_bboxes: list[fitz.Rect] | None = None
+    table_bboxes: list[fitz.Rect] | None = None,
+    tips: dict[str, list[float]] | None = None,
 ) -> float | None:
     """Strategy 1: Detect horizontal separator line."""
     page_width = clip.x1 - clip.x0
@@ -106,8 +151,7 @@ def _detect_footer_by_line(
                         y = max(p1.y, p2.y)
                         if table_bboxes and any(t.y0 - 2 <= y <= t.y1 + 2 and t.x0 <= (p1.x + p2.x)/2 <= t.x1 for t in table_bboxes):
                             continue
-                        # Focus on the bottom 25% of the page
-                        if clip.y0 < y < clip.y1 and y > (clip.y1 - (clip.height * 0.25)):
+                        if _is_footer_separator_y(page, clip, y, tips):
                             if best_y is None or y < best_y:
                                 best_y = y
             elif item[0] == "re": # rectangle
@@ -116,13 +160,15 @@ def _detect_footer_by_line(
                     y = rect.y0
                     if table_bboxes and any(t.y0 - 2 <= y <= t.y1 + 2 and t.x0 <= rect.x0 + rect.width/2 <= t.x1 for t in table_bboxes):
                         continue
-                    if clip.y0 < y < clip.y1 and y > (clip.y1 - (clip.height * 0.25)):
+                    if _is_footer_separator_y(page, clip, y, tips):
                         if best_y is None or y < best_y:
                             best_y = y
     return best_y
 
 
-def _detect_footer_by_text_line(page: fitz.Page, clip: fitz.Rect) -> float | None:
+def _detect_footer_by_text_line(
+    page: fitz.Page, clip: fitz.Rect, tips: dict[str, list[float]] | None = None
+) -> float | None:
     """Strategy 2: Detect text-based separator lines (e.g. '---', '___')."""
     dict_data = page.get_text("dict", clip=clip)
     best_y = None
@@ -140,13 +186,13 @@ def _detect_footer_by_text_line(page: fitz.Page, clip: fitz.Rect) -> float | Non
             is_space_line = not stripped and len(raw_line_text) >= 30
             
             if is_text_line or is_space_line:
-                if y > (clip.y1 - (clip.height * 0.25)):
+                if _is_footer_separator_y(page, clip, y, tips):
                     if best_y is None or y < best_y:
                         best_y = y
     return best_y
 
 
-def _detect_footer_by_smart_markers(page, clip: fitz.Rect, tips: dict[str, float]) -> float | None:
+def _detect_footer_by_smart_markers(page, clip: fitz.Rect, tips: dict[str, list[float]]) -> float | None:
     """Strategy 3: Topmost Linked Reference.
     
     Identifies the highest line in the footer area that starts with a number
@@ -156,25 +202,23 @@ def _detect_footer_by_smart_markers(page, clip: fitz.Rect, tips: dict[str, float
     if not tips:
         return None
         
-    lowest_tip_y = max(tips.values())
     blocks = page.get_text("blocks", clip=clip)
-    match_ys = []
+    latest_match_by_num: dict[str, float] = {}
     
     for b in blocks:
         bx0, by0, bx1, by1, text = b[:5]
-        if by0 <= lowest_tip_y:
-            continue
-            
         match = re.match(r"^(\d+)", text.strip())
         if match:
             num = match.group(1)
-            # COORDINATE LINKAGE: Marker must match a tip and sit below all body tips.
-            if num in tips:
-                match_ys.append(by0)
+            # Match per marker number. A reference line is valid if any same-number
+            # tip exists above it; keep the latest candidate for that number.
+            if any(tip_y < by0 for tip_y in tips.get(num, [])):
+                latest_match_by_num[num] = max(by0, latest_match_by_num.get(num, by0))
 
-    if match_ys:
-        # Return the HIGHEST (minimum Y) matching reference line
-        return min(match_ys)
+    if latest_match_by_num:
+        # After choosing the latest reference for each number, return the topmost
+        # reference among all matched numbers as the footer start candidate.
+        return min(latest_match_by_num.values())
         
     return None
 
@@ -246,12 +290,12 @@ def detect_footer_y(
         return None, False
 
     # 2. Visual Line
-    y = _detect_footer_by_line(page, clip, table_bboxes=table_bboxes)
+    y = _detect_footer_by_line(page, clip, table_bboxes=table_bboxes, tips=tips_map)
     if y is not None:
         return y, True
 
     # 3. Text-based Line
-    y = _detect_footer_by_text_line(page, clip)
+    y = _detect_footer_by_text_line(page, clip, tips=tips_map)
     if y is not None:
         return y, True
 
