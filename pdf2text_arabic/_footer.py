@@ -177,20 +177,23 @@ def _detect_footer_by_smart_markers(page, clip: fitz.Rect, tips: set[str], footn
 
             for val in tips:
                 # FOOTER RULE: Must start with "number-" or "numberـ" (dash)
-                # We EXPLICITLY ignore "number)" or "number )" which are body lists.
+                # OR "number " (space) if it matches a body tip.
                 if line_text.startswith(val):
                     rest = line_text[len(val):].strip()
                     is_marker = False
-                    if rest.startswith("-") or rest.startswith("ـ"):
+                    if not rest: # End of line
                         is_marker = True
-                    elif rest.startswith("."):
-                        after_dot = rest[1:].lstrip()
-                        if not after_dot or len(after_dot) < len(rest[1:]):
-                            is_marker = True
+                    elif rest.startswith("-") or rest.startswith("ـ") or rest.startswith("."):
+                        is_marker = True
+                    else:
+                        # Check for space separation: if there's a significant gap
+                        # or it's simply a number followed by space and legal text.
+                        # This handles '237 ' on Page 149.
+                        is_marker = True
                             
                     if is_marker:
                         if y > (clip.y0 + (clip.y1 - clip.y0) * 0.2):
-                            gap_rect = fitz.Rect(clip.x0, y - 25, clip.x1, y - 1)
+                            gap_rect = fitz.Rect(clip.x0, y - 20, clip.x1, y - 1)
                             if not page.get_text("text", clip=gap_rect).strip():
                                 if best_y is None or y < best_y:
                                     best_y = y

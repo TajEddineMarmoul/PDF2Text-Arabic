@@ -2,14 +2,12 @@
 
 Draws a page with overlays showing what ``extract_page`` actually sees:
 table bboxes, OCR regions, and text blocks, numbered in the exact reading
-order the extractor produces.  Because it calls the same
-``order_reading_rtl`` the extractor uses, the labels are a faithful debug
-view of the pipeline — if the numbering looks wrong, the output text is
-wrong in the same way.
+order the extractor produces.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
 import fitz
@@ -21,7 +19,6 @@ from ._extract import (
     _compute_clip,
     _image_only_regions,
     _is_page_number_text,
-    _is_page_number_block,
     _is_superscript,
     detect_footer_y,
     order_reading_rtl,
@@ -29,7 +26,7 @@ from ._extract import (
 from ._tables import extract_tables
 
 
-def draw_page_layout(
+def get_debug_pixmap(
     page: fitz.Page,
     *,
     dpi: int = 150,
@@ -39,28 +36,15 @@ def draw_page_layout(
     auto_crop_top: bool = True,
     auto_crop_bottom: bool = True,
     detect_footer: bool = True,
-) -> None:
-    """Render *page* with extraction overlays and show it inline.
-
-    Colours:
-        * blue    — detected tables
-        * magenta — OCR regions
-        * orange  — full-width (spanning) text blocks
-        * green   — right-column text
-        * red     — left-column text
-        * maroon  — small numbers (superscripts/footnotes)
-
-    When ``crop_top``/``crop_bottom`` are used (manual or auto), the trimmed
-    header/footer bands are shaded grey so you can preview what will be dropped.
-    Detected footer regions are shaded light blue.
-
-    Labels are placed outside each rectangle in reading-order sequence.
-    """
+) -> fitz.Pixmap:
+    """Perform layout analysis and return a Pixmap with debug overlays."""
+    
+    # 1. SETUP & CLIPPING (Shared with _extract.py)
     w, h = page.rect.width, page.rect.height
     clip = _compute_clip(page, crop_top, crop_bottom, crop_unit, auto_crop_top, auto_crop_bottom)
     mid_x = w / 2
 
-    # Shade cropped header/footer bands
+    # Shade cropped header/footer bands (Grey)
     if clip.y0 > page.rect.y0:
         header_band = fitz.Rect(page.rect.x0, page.rect.y0, page.rect.x1, clip.y0)
         page.draw_rect(header_band, color=(0.6, 0.6, 0.6), fill=(0.85, 0.85, 0.85), fill_opacity=0.5, width=0.5)
@@ -68,69 +52,47 @@ def draw_page_layout(
         footer_band = fitz.Rect(page.rect.x0, clip.y1, page.rect.x1, page.rect.y1)
         page.draw_rect(footer_band, color=(0.6, 0.6, 0.6), fill=(0.85, 0.85, 0.85), fill_opacity=0.5, width=0.5)
 
-    # 1. Detection — same primitives the extractor uses
+    # 2. DETECTION
     _, table_bbox_tuples, _ = extract_tables(page, clip=clip)
     table_bboxes = [fitz.Rect(t) for t in table_bbox_tuples]
     ocr_regions = _image_only_regions(page, clip)
 
-    # Shade footer region and adjust clip
+    # Shaded Footer (Cyan)
     if detect_footer:
-        footer_y, guaranteed = detect_footer_y(page, clip, table_bboxes=table_bboxes)
+        footer_y, _ = detect_footer_y(page, clip, table_bboxes=table_bboxes)
         if footer_y is not None:
             apply_crop = True
-            # Always check against tables to avoid cutting in the middle of data
             for ty0, ty1 in [(t.y0, t.y1) for t in table_bboxes]:
                 if ty0 <= footer_y <= ty1:
                     apply_crop = False
                     break
             if apply_crop:
+                # Shade the unified footer/footnote area Cyan
                 f_rect = fitz.Rect(clip.x0, footer_y, clip.x1, clip.y1)
-                page.draw_rect(f_rect, color=(0.2, 0.5, 0.9), fill=(0.7, 0.85, 1.0), fill_opacity=0.3, width=0.5)
+                page.draw_rect(f_rect, color=(0, 0.6, 0.6), fill=(0.8, 1.0, 1.0), fill_opacity=0.3, width=0.5)
+                # Adjust clip for subsequent item collection
                 clip = fitz.Rect(clip.x0, clip.y0, clip.x1, footer_y - 1)
 
     raw: dict[str, Any] = page.get_text("rawdict", clip=clip)  # type: ignore[assignment]
     body_size = _body_font_size(raw, table_bbox_tuples)
 
-    # Define zones for page number detection relative to the page
+    # 3. ITEM COLLECTION
     page_num_bottom_zone_y = page.rect.y1 - page.rect.height * _PAGE_NUMBER_BOTTOM_PCT
-    page_num_top_zone_y = page.rect.y0 + page.rect.height * _PAGE_NUMBER_BOTTOM_PCT
-    
     text_items: list[dict[str, Any]] = []
     superscript_items: list[dict[str, Any]] = []
 
     for b in raw["blocks"]:
-        if "lines" not in b:
-            continue
+        if "lines" not in b: continue
         r = fitz.Rect(b["bbox"])
         cx, cy = (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2
         
-        # Match extract_page: center-point containment for tables
-        if any(t.x0 <= cx <= t.x1 and t.y0 <= cy <= t.y1 for t in table_bboxes):
-            continue
-        if any(r.intersects(o_rect) for o_rect in ocr_regions):
-            continue
+        if any(t.x0 <= cx <= t.x1 and t.y0 <= cy <= t.y1 for t in table_bboxes): continue
+        if any(r.intersects(o_rect) for o_rect in ocr_regions): continue
             
-        # Match extract_page: ignore standalone page numbers
-        block_text = "".join(
-            c.get("c", "")
-            for line in b.get("lines", [])
-            for span in line.get("spans", [])
-            for c in span.get("chars", [])
-        ).strip()
-        
-        if (
-            block_text
-            and cy >= page_num_bottom_zone_y
-            and all(
-                _is_page_number_text("".join(c.get("c", "") for c in span.get("chars", [])).strip())
-                for line in b.get("lines", [])
-                for span in line.get("spans", [])
-                if "".join(c.get("c", "") for c in span.get("chars", [])).strip()
-            )
-        ):
+        block_text = "".join(c.get("c", "") for line in b.get("lines", []) for span in line.get("spans", []) for c in span.get("chars", [])).strip()
+        if block_text and cy >= page_num_bottom_zone_y and all(_is_page_number_text("".join(c.get("c", "") for c in span.get("chars", [])).strip()) for line in b.get("lines", []) for span in line.get("spans", []) if "".join(c.get("c", "") for c in span.get("chars", [])).strip()):
             continue
 
-        # Separate block into normal text and reference tips (superscripts)
         normal_bbox = fitz.Rect()
         for line in b["lines"]:
             for span in line["spans"]:
@@ -138,58 +100,38 @@ def draw_page_layout(
                 if _is_superscript(span, body_size):
                     superscript_items.append({"bbox": span_bbox, "type": "SUPERSCRIPT"})
                 else:
-                    if normal_bbox.is_empty:
-                        normal_bbox = fitz.Rect(span_bbox)
-                    else:
-                        normal_bbox = normal_bbox | span_bbox
+                    if normal_bbox.is_empty: normal_bbox = fitz.Rect(span_bbox)
+                    else: normal_bbox = normal_bbox | span_bbox
 
         if not normal_bbox.is_empty:
             text_items.append({"bbox": normal_bbox, "type": "TEXT"})
 
-    # 2. Unified item list
     all_items: list[dict[str, Any]] = []
-    for t in table_bboxes:
-        all_items.append({"bbox": t, "type": "TABLE"})
-    for r in ocr_regions:
-        all_items.append({"bbox": r, "type": "IMAGE"})
+    for t in table_bboxes: all_items.append({"bbox": t, "type": "TABLE"})
+    for r in ocr_regions: all_items.append({"bbox": r, "type": "IMAGE"})
     all_items.extend(text_items)
     all_items.extend(superscript_items)
 
-    # Same reading order as extract_page
     final_order = order_reading_rtl(all_items, clip, bbox=lambda x: x["bbox"])
 
-    # 3. Draw
+    # 4. DRAWING
     FONT_SIZE = 6
     BG_H = 8
     for i, it in enumerate(final_order):
         r = it["bbox"]
-        if it["type"] == "TABLE":
-            color = (0, 0, 1)
-        elif it["type"] == "IMAGE":
-            color = (1, 0, 1)
-        elif it["type"] == "SUPERSCRIPT":
-            color = (0.5, 0, 0) # Maroon
-        elif r.width > 0.55 * w:
-            color = (1, 0.5, 0)
-        elif (r.x0 + r.x1) / 2 > mid_x:
-            color = (0, 0.7, 0)
-        else:
-            color = (0.8, 0, 0)
+        if it["type"] == "TABLE": color = (0, 0, 1) # Blue
+        elif it["type"] == "IMAGE": color = (1, 0, 1) # Magenta
+        elif it["type"] == "SUPERSCRIPT": color = (0.5, 0, 0) # Maroon
+        elif r.width > 0.55 * w: color = (1, 0.5, 0) # Orange
+        elif (r.x0 + r.x1) / 2 > mid_x: color = (0, 0.7, 0) # Green
+        else: color = (0.8, 0, 0) # Red
 
-        # For superscripts, use a thinner line to not obscure the small digit
         width = 1 if it["type"] == "SUPERSCRIPT" else 2
         page.draw_rect(r, color=color, width=width)
 
-        if it["type"] == "SUPERSCRIPT":
-            label = f"S{i + 1}"
-        elif it["type"] != "TEXT":
-            label = f"{it['type'][0]}{i + 1}"
-        else:
-            label = str(i + 1)
-
+        label = f"S{i+1}" if it["type"] == "SUPERSCRIPT" else (f"{it['type'][0]}{i+1}" if it["type"] != "TEXT" else str(i+1))
         bg_w = 10 if len(label) <= 2 else 18
 
-        # Place label outside the rectangle so it never covers content
         if r.y0 >= BG_H + 1:
             bg = fitz.Rect(r.x1 - bg_w, r.y0 - BG_H, r.x1, r.y0)
             text_y = r.y0 - 2
@@ -198,14 +140,15 @@ def draw_page_layout(
             text_y = r.y1 + BG_H - 2
 
         page.draw_rect(bg, color=(1, 1, 1), fill=(1, 1, 1))
-        page.insert_text(
-            (bg.x0 + 1, text_y),
-            label,
-            color=(0, 0, 1),
-            fontsize=FONT_SIZE,
-            fontname="helv",
-        )
+        page.insert_text((bg.x0 + 1, text_y), label, color=(0, 0, 1), fontsize=FONT_SIZE, fontname="helv")
 
-    pix = page.get_pixmap(dpi=dpi)
+    return page.get_pixmap(dpi=dpi)
+
+
+def draw_page_layout(
+    page: fitz.Page,
+    **kwargs,
+) -> None:
+    """Render *page* with extraction overlays and show it inline."""
+    pix = get_debug_pixmap(page, **kwargs)
     display(Image(data=pix.tobytes("png")))
-

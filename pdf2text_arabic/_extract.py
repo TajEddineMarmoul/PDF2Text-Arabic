@@ -719,8 +719,10 @@ def extract_page(
 
     # 2. FOOTER DETECTION
     footer_y = None
+    footnote_pieces: list[tuple[float, float, float, float, str]] = []
+    
     if detect_footer:
-        footer_y, guaranteed = detect_footer_y(page, clip, table_bboxes=table_bboxes)
+        footer_y, _ = detect_footer_y(page, clip, table_bboxes=table_bboxes)
         if footer_y is not None:
             apply_crop = True
             # Always check against tables to avoid cutting in the middle of data
@@ -729,6 +731,21 @@ def extract_page(
                     apply_crop = False
                     break
             if apply_crop:
+                # 2.1 Extract Footnote content separately
+                footnote_clip = fitz.Rect(clip.x0, footer_y, clip.x1, clip.y1)
+                f_raw = page.get_text("rawdict", clip=footnote_clip)
+                f_lines = []
+                for b in f_raw["blocks"]:
+                    if "lines" not in b: continue
+                    merged_f = merge_lines_by_y(b["lines"])
+                    for r in merged_f:
+                        f_text = clean_arabic(build_row_text(r["spans"])).strip()
+                        if f_text:
+                            f_lines.append(f_text)
+                if f_lines:
+                    footnote_pieces.append((footer_y, 9999, clip.x0, clip.x1, "\n".join(f_lines)))
+
+                # 2.2 Shrink clip to exclude footer
                 clip = fitz.Rect(clip.x0, clip.y0, clip.x1, footer_y - 1)
 
     # 3. CONTENT DETECTION
@@ -787,6 +804,9 @@ def extract_page(
 
             if lines_text:
                 pieces.append((by0, by1, bx0, bx1, "\n".join(lines_text)))
+        
+        # Add Footnotes at the end
+        pieces.extend(footnote_pieces)
 
     # 5. OCR EXTRACTION
     if effective_mode == "ocr":

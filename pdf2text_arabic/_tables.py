@@ -176,9 +176,14 @@ def extract_tables(
     candidates = []
     
     # Identify initial candidates from the default strategy
-    # We include tables with >= 2 rows, OR 1-row tables if they have > 2 columns 
-    # (which indicates a table whose horizontal row dividers are completely missing).
-    initial_tables = [t for t in tabs.tables if len(t.rows) >= 2 or (len(t.rows) == 1 and len(t.header.cells) > 2)]
+    # STABILITY: We only treat it as a technical table if it has >= 5 columns.
+    # This prevents dual-column or multi-column paragraph layouts from being 
+    # incorrectly identified as tables (Page 9, 25, 47, 54, 149).
+    initial_tables = [
+        t for t in tabs.tables 
+        if (len(t.rows) >= 2 or (len(t.rows) == 1 and len(t.header.cells) > 2))
+        and len(t.header.cells) >= 5
+    ]
     
     if strategy is None and clip is not None:
         if initial_tables:
