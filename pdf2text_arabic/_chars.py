@@ -114,56 +114,26 @@ def fix_zero_width_clusters(chars: list[dict]) -> list[dict]:
             i = j
             continue
 
-        # --- Lam-Alef ligature ---
+        # --- Robust Lam-Alef Ligature Reconstruction ---
+        # Many Moroccan PDFs decompose "لإ" into "إ" (0-width) and "ل".
+        # We detect ANY overlap between an Alef-variant and a Lam.
         if (
-            w >= 0.5
+            i + 1 < len(chars)
             and chars[i]["c"] in "اأإآ"
-            and i + 1 < len(chars)
             and chars[i + 1]["c"] == "\u0644"
         ):
+            alef = chars[i]
             lam = chars[i + 1]
-            lam_w = lam["bbox"][2] - lam["bbox"][0]
-            if lam_w > w * 1.8:
-                alef_bbox = chars[i]["bbox"]
-                lam_bbox = lam["bbox"]
-
-                if result and abs(result[-1]["bbox"][0] - alef_bbox[0]) < 1.0:
-                    # Overlap with preceding char — place lam just after it
-                    new_x = result[-1]["bbox"][0] - 0.01
-                    result.append(
-                        {
-                            "c": "\u0644",
-                            "bbox": (new_x, alef_bbox[1], new_x, alef_bbox[3]),
-                            "origin": chars[i].get("origin", (0, 0)),
-                        }
-                    )
-                    result.append(
-                        {
-                            "c": chars[i]["c"],
-                            "bbox": lam_bbox,
-                            "origin": lam.get("origin", (0, 0)),
-                        }
-                    )
-                elif result and is_arabic(result[-1]["c"]):
-                    # Word-internal/final — no swap needed (e.g. حال not حلا)
-                    result.append(chars[i])
-                    result.append(chars[i + 1])
-                else:
-                    # Word-initial/standalone — swap lam↔alef bboxes
-                    result.append(
-                        {
-                            "c": "\u0644",
-                            "bbox": alef_bbox,
-                            "origin": chars[i].get("origin", (0, 0)),
-                        }
-                    )
-                    result.append(
-                        {
-                            "c": chars[i]["c"],
-                            "bbox": lam_bbox,
-                            "origin": lam.get("origin", (0, 0)),
-                        }
-                    )
+            
+            # Check for spatial overlap (distance between centroids < 5px)
+            # This is much safer than strict x0 comparison.
+            ax = (alef["bbox"][0] + alef["bbox"][2]) / 2
+            lx = (lam["bbox"][0] + lam["bbox"][2]) / 2
+            
+            if abs(ax - lx) < 5.0:
+                # MANDATORY SWAP: Logical Arabic "LA" must have Lam first in byte stream
+                result.append(lam)
+                result.append(alef)
                 i += 2
                 continue
 

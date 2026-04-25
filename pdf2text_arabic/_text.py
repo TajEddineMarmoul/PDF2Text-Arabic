@@ -29,7 +29,15 @@ _NON_JOINING_FORWARD = set("اأإآدذرزوؤةىء\u0671")
 
 def clean_arabic(text: str) -> str:
     """Post-process extracted text: normalize, strip invisibles, fix spacing."""
+    # Map common PUA bullet points
     text = text.replace("\uf02d", "-")
+    
+    # GLOBAL LIGATURE CORRECTOR: Fix common 'Lam-Alef' decomposition artifacts
+    # (e.g. 'اإل' -> 'الإ', 'األ' -> 'الأ', 'اآلل' -> 'الآ')
+    text = text.replace("اإل", "الإ")
+    text = text.replace("األ", "الأ")
+    text = text.replace("اآلل", "الآ")
+    
     text = unicodedata.normalize("NFKC", text)
     text = _ZW_RE.sub("", text)
     text = text.replace("\u0640", "")
