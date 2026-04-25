@@ -41,13 +41,13 @@ def _get_body_size(data: dict) -> float:
     return max(size_chars.items(), key=lambda x: x[1])[0]
 
 
-def _collect_superscript_tips(page: fitz.Page, clip: fitz.Rect, body_size: float) -> set[str]:
-    """Find all small superscript digits in the body text area."""
+def _collect_superscript_tips(page: fitz.Page, clip: fitz.Rect, body_size: float) -> dict[str, float]:
+    """Find all small superscript digits and map them to their LOWEST Y-coordinate."""
     # Look at the top 90% of the page to find tips (superscripts)
-    body_clip = fitz.Rect(clip.x0, clip.y0, clip.x1, clip.y0 + (clip.y1 - clip.y0) * 0.9)
+    body_clip = fitz.Rect(clip.x0, clip.y0, clip.x1, clip.y0 + (clip.height * 0.9))
     data = page.get_text("rawdict", clip=body_clip)
     
-    tips = set()
+    tips: dict[str, float] = {}
     for block in data.get("blocks", []):
         if block.get("type") != 0: continue
         for line in block.get("lines", []):
@@ -74,11 +74,13 @@ def _collect_superscript_tips(page: fitz.Page, clip: fitz.Rect, body_size: float
                     if sz < line_dominant_size * 0.9:
                         is_tip = True
                     elif sz < body_size * 0.85 and sz < 13:
-                        # STANDALONE check: if the whole line is small, it's likely a tip
                         is_tip = True
                         
                     if is_tip:
-                        tips.add(digit_match)
+                        y_bottom = span["bbox"][3]
+                        # Track the LOWEST point (maximum Y) each reference number appears in the body
+                        if digit_match not in tips or y_bottom > tips[digit_match]:
+                            tips[digit_match] = y_bottom
     return tips
 
 
@@ -89,7 +91,7 @@ def _detect_footer_by_line(
 ) -> float | None:
     """Strategy 1: Detect horizontal separator line."""
     page_width = clip.x1 - clip.x0
-    min_line_width = page_width * 0.15 # Line must be at least 15% of page width
+    min_line_width = page_width * 0.15 
     
     drawings = page.get_drawings()
     best_y = None
@@ -104,7 +106,8 @@ def _detect_footer_by_line(
                         y = max(p1.y, p2.y)
                         if table_bboxes and any(t.y0 - 2 <= y <= t.y1 + 2 and t.x0 <= (p1.x + p2.x)/2 <= t.x1 for t in table_bboxes):
                             continue
-                        if clip.y0 < y < clip.y1 and y > (clip.y0 + (clip.y1 - clip.y0) * 0.2):
+                        # Focus on the bottom 25% of the page
+                        if clip.y0 < y < clip.y1 and y > (clip.y1 - (clip.height * 0.25)):
                             if best_y is None or y < best_y:
                                 best_y = y
             elif item[0] == "re": # rectangle
@@ -113,14 +116,14 @@ def _detect_footer_by_line(
                     y = rect.y0
                     if table_bboxes and any(t.y0 - 2 <= y <= t.y1 + 2 and t.x0 <= rect.x0 + rect.width/2 <= t.x1 for t in table_bboxes):
                         continue
-                    if clip.y0 < y < clip.y1 and y > (clip.y0 + (clip.y1 - clip.y0) * 0.2):
+                    if clip.y0 < y < clip.y1 and y > (clip.y1 - (clip.height * 0.25)):
                         if best_y is None or y < best_y:
                             best_y = y
     return best_y
 
 
 def _detect_footer_by_text_line(page: fitz.Page, clip: fitz.Rect) -> float | None:
-    """Strategy 2: Detect text-based separator lines (e.g. '---', '___', or long space strings)."""
+    """Strategy 2: Detect text-based separator lines (e.g. '---', '___')."""
     dict_data = page.get_text("dict", clip=clip)
     best_y = None
     
@@ -129,95 +132,51 @@ def _detect_footer_by_text_line(page: fitz.Page, clip: fitz.Rect) -> float | Non
         for line in block.get("lines", []):
             if not line.get("spans"): continue
             line_text = "".join(span.get("text", "") for span in line["spans"]).strip()
-            # We also care about lines that are purely whitespace if they are long
             raw_line_text = "".join(span.get("text", "") for span in line["spans"])
-            
             y = line["bbox"][1]
             
-            # 1. Check for standard text lines (dashes, underscores, dots)
             stripped = line_text.replace(" ", "")
             is_text_line = len(stripped) >= 10 and all(c in '_-ـ.' for c in stripped)
-            
-            # 2. Check for long whitespace lines (at least 30 spaces)
             is_space_line = not stripped and len(raw_line_text) >= 30
             
             if is_text_line or is_space_line:
-                if y > (clip.y0 + (clip.y1 - clip.y0) * 0.2):
+                if y > (clip.y1 - (clip.height * 0.25)):
                     if best_y is None or y < best_y:
                         best_y = y
     return best_y
 
 
-def _detect_footer_by_smart_markers(page, clip: fitz.Rect, tips: set[str], footnote_size: float) -> float | None:
-    """Strategy 3: Match superscript tips to footnote starting lines."""
+def _detect_footer_by_smart_markers(page, clip: fitz.Rect, tips: dict[str, float]) -> float | None:
+    """Strategy 3: Topmost Linked Reference.
+    
+    Identifies the highest line in the footer area that starts with a number
+    matching a superscript tip, ensuring the footer line is physically 
+    below the lowest usage of that tip in the body.
+    """
     if not tips:
         return None
         
-    dict_data = page.get_text("dict", clip=clip)
-    best_y = None
-    lines_info = []
+    footer_zone_y = clip.y1 - (clip.height * 0.35)
+    blocks = page.get_text("blocks", clip=clip)
+    match_ys = []
     
-    for block in dict_data.get("blocks", []):
-        if block.get("type") != 0: continue
-        for line in block.get("lines", []):
-            if not line.get("spans"): continue
-            line_text = "".join(span.get("text", "") for span in line["spans"]).strip()
-            if not line_text: continue
-            y = line["bbox"][1]
+    for b in blocks:
+        bx0, by0, bx1, by1, text = b[:5]
+        if by0 < footer_zone_y:
+            continue
             
-            # Calculate dominant size for upward expansion
-            lsizes = {}
-            for s in line["spans"]:
-                t = s.get("text", "").strip()
-                if t:
-                    sz = round(s.get("size", 0))
-                    lsizes[sz] = lsizes.get(sz, 0) + len(t)
-            ldom = max(lsizes.items(), key=lambda x: x[1])[0] if lsizes else footnote_size
-            lines_info.append((y, line_text, ldom))
+        match = re.match(r"^(\d+)", text.strip())
+        if match:
+            num = match.group(1)
+            # COORDINATE LINKAGE: Marker must match a tip AND sit below its lowest body usage
+            if num in tips and by0 > tips[num]:
+                match_ys.append(by0)
 
-            for val in tips:
-                # FOOTER RULE: Must start with "number-" or "numberـ" (dash)
-                # OR "number " (space) if it matches a body tip.
-                if line_text.startswith(val):
-                    rest = line_text[len(val):].strip()
-                    is_marker = False
-                    if not rest: # End of line
-                        is_marker = True
-                    elif rest.startswith("-") or rest.startswith("ـ") or rest.startswith("."):
-                        is_marker = True
-                    else:
-                        # Check for space separation: if there's a significant gap
-                        # or it's simply a number followed by space and legal text.
-                        # This handles '237 ' on Page 149.
-                        is_marker = True
-                            
-                    if is_marker:
-                        # Zone Check: Reference must be in the bottom 30% of the page
-                        if y > (clip.y0 + (clip.y1 - clip.y0) * 0.2):
-                            # Tightly-packed footer check (reduced to 2px for Page 149)
-                            gap_rect = fitz.Rect(clip.x0, y - 2, clip.x1, y - 1)
-                            if not page.get_text("text", clip=gap_rect).strip():
-                                if best_y is None or y < best_y:
-                                    best_y = y
-                        break
-                        
-    # Upward Expansion
-    if best_y is not None:
-        lines_info.sort(key=lambda x: x[0])
-        idx = -1
-        for i, (ly, _, _) in enumerate(lines_info):
-            if ly == best_y:
-                idx = i
-                break
-        if idx > 0:
-            for i in range(idx - 1, -1, -1):
-                py, pt, psz = lines_info[i]
-                if psz <= footnote_size + 0.5:
-                    best_y = py
-                else:
-                    break
-                    
-    return best_y
+    if match_ys:
+        # Return the HIGHEST (minimum Y) matching reference line
+        return min(match_ys)
+        
+    return None
 
 
 def _detect_footer_by_global_clustering(page, clip: fitz.Rect, body_size: float) -> float | None:
@@ -264,10 +223,7 @@ def _detect_footer_by_global_clustering(page, clip: fitz.Rect, body_size: float)
             small_count = sum(1 for _, s, _ in remaining_lines if s <= footnote_size + 0.5)
             ratio = small_count / len(remaining_lines)
             page_height = clip.y1 - clip.y0
-            relative_y = (y - clip.y0) / page_height
-            required_ratio = 0.90 if relative_y < 0.7 else 0.70
-            if ratio >= required_ratio and y > clip.y0 + page_height * 0.3:
-                # GOLDEN RULE: Must have a spatial gap above it (at least 20px)
+            if ratio >= 0.70 and y > (clip.y1 - page_height * 0.2):
                 gap_rect = fitz.Rect(clip.x0, y - 20, clip.x1, y - 1)
                 if not page.get_text("text", clip=gap_rect).strip():
                     return y
@@ -279,64 +235,32 @@ def detect_footer_y(
     clip: fitz.Rect, 
     table_bboxes: list[fitz.Rect] | None = None
 ) -> tuple[float | None, bool]:
-    """Find the y-coordinate where footnotes begin within *clip*.
-    
-    FOOTER RULE: Detection is only active if the page contains superscript 
-    markers (tips) in the body text.
-    """
+    """Find the y-coordinate where footnotes begin using coordinate linkage."""
     raw_data = page.get_text("rawdict", clip=clip)
     body_size = _get_body_size(raw_data)
-    tips = _collect_superscript_tips(page, clip, body_size)
+    # 1. Map Tips to their lowest Y-coordinates
+    tips_map = _collect_superscript_tips(page, clip, body_size)
 
-    # GOLDEN RULE: If no superscript markers found, we assume no footnotes exist.
-    if not tips:
+    # If no superscript markers found, we assume no footnotes exist.
+    if not tips_map:
         return None, False
 
-    # 1. Visual Line (Drawings)
+    # 2. Visual Line
     y = _detect_footer_by_line(page, clip, table_bboxes=table_bboxes)
-    if y is not None:
-        # GOLDEN RULE: A line is only a footer separator if a tip is found BELOW it.
-        # This prevents mid-page lines from being flagged.
-        below_clip = fitz.Rect(clip.x0, y, clip.x1, clip.y1)
-        below_text = page.get_text("text", clip=below_clip).strip()
-        # Verify that at least one tip is used as a marker (tip followed by dash)
-        has_real_marker = False
-        for tip in tips:
-            # Look for "digit-" or "digit\n-" or "digit -" at the start of a line
-            if re.search(fr"^{re.escape(tip)}\s*[\-ـ]", below_text, re.MULTILINE):
-                has_real_marker = True
-                break
-        if has_real_marker:
-            return y, True
-
-    # 2. Text-based Line (Dashes, dots, or long spaces)
-    y = _detect_footer_by_text_line(page, clip)
-    if y is not None:
-        below_clip = fitz.Rect(clip.x0, y, clip.x1, clip.y1)
-        below_text = page.get_text("text", clip=below_clip).strip()
-        has_real_marker = False
-        for tip in tips:
-            if re.search(fr"^{re.escape(tip)}\s*[\-ـ]", below_text, re.MULTILINE):
-                has_real_marker = True
-                break
-        if has_real_marker:
-            return y, True
-
-    # Calculate footnote size for remaining strategies
-    sz_chars = _get_page_fonts(raw_data)
-    fsize = None
-    sorted_sz = sorted(sz_chars.items(), key=lambda x: x[1], reverse=True)
-    for sz, count in sorted_sz:
-        if sz <= body_size - 2.0 and count > sorted_sz[0][1] * 0.05:
-            fsize = sz
-            break
-
-    # Strategy 3: Smart Marker Matching
-    y = _detect_footer_by_smart_markers(page, clip, tips, fsize or body_size)
     if y is not None:
         return y, True
 
-    # Strategy 4: Global Font Size Clustering
+    # 3. Text-based Line
+    y = _detect_footer_by_text_line(page, clip)
+    if y is not None:
+        return y, True
+
+    # 4. Strategy: Topmost Linked Reference (Using mapped coordinates)
+    y = _detect_footer_by_smart_markers(page, clip, tips_map)
+    if y is not None:
+        return y, True
+
+    # 5. Global Font Size Clustering
     y = _detect_footer_by_global_clustering(page, clip, body_size)
     if y is not None:
         return y, False

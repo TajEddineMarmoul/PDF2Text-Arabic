@@ -155,6 +155,70 @@ def _slice_region_into_rows(rawdict: dict, table, tx0: float, tx1: float) -> lis
     return grid
 
 
+
+def _slice_region_into_rows(rawdict: dict, table, tx0: float, tx1: float) -> list[list[str]]:
+    rows_map: dict[float, dict[int, str]] = {}
+    ncells = len(table.header.cells)
+    
+    col_bounds = []
+    for cell in table.rows[0].cells:
+        if cell:
+            col_bounds.append((cell[0], cell[2]))
+        else:
+            col_bounds.append((None, None))
+            
+    for ci, bounds in enumerate(reversed(col_bounds)):
+        if bounds[0] is None:
+            continue
+        cx0, cx1 = bounds
+        
+        lines_all = []
+        for block in rawdict.get("blocks", []):
+            if "lines" not in block:
+                continue
+            for line in block["lines"]:
+                filtered_spans = []
+                for span in line["spans"]:
+                    filtered_chars = []
+                    for ch in span["chars"]:
+                        bb = ch["bbox"]
+                        char_cx = (bb[0] + bb[2]) / 2
+                        if cx0 - 2.0 <= char_cx <= cx1 + 2.0:
+                            filtered_chars.append(ch)
+                    if filtered_chars:
+                        new_span = dict(span)
+                        new_span["chars"] = filtered_chars
+                        filtered_spans.append(new_span)
+                if filtered_spans:
+                    new_line = dict(line)
+                    new_line["spans"] = filtered_spans
+                    lines_all.append(new_line)
+
+        if not lines_all:
+            continue
+        
+        merged = merge_lines_by_y(lines_all)
+        for row in merged:
+            cy = row["cy"]
+            text = clean_arabic(build_row_text(row["spans"])).strip()
+            text = re.sub(r"^[؀-ۿ]\s+(?=\d)", "", text)
+            if text:
+                found_y = None
+                for ry in rows_map.keys():
+                    if abs(ry - cy) < 5.0:
+                        found_y = ry
+                        break
+                if found_y is None:
+                    found_y = cy
+                    rows_map[found_y] = {col_idx: "" for col_idx in range(ncells)}
+                rows_map[found_y][ci] = text
+
+    sorted_ys = sorted(rows_map.keys())
+    grid = []
+    for ry in sorted_ys:
+        grid.append([rows_map[ry][ci] for ci in range(ncells)])
+    return grid
+
 def extract_tables(
     page,
     clip=None,
@@ -176,14 +240,9 @@ def extract_tables(
     candidates = []
     
     # Identify initial candidates from the default strategy
-    # STABILITY: We only treat it as a technical table if it has >= 5 columns.
-    # This prevents dual-column or multi-column paragraph layouts from being 
-    # incorrectly identified as tables (Page 9, 25, 47, 54, 149).
-    initial_tables = [
-        t for t in tabs.tables 
-        if (len(t.rows) >= 2 or (len(t.rows) == 1 and len(t.header.cells) > 2))
-        and len(t.header.cells) >= 5
-    ]
+    # We include tables with >= 2 rows, OR 1-row tables if they have > 2 columns 
+    # (which indicates a table whose horizontal row dividers are completely missing).
+    initial_tables = [t for t in tabs.tables if len(t.rows) >= 2 or (len(t.rows) == 1 and len(t.header.cells) > 2)]
     
     if strategy is None and clip is not None:
         if initial_tables:
@@ -213,10 +272,8 @@ def extract_tables(
                 best_t = t
                 if mixed_tabs.tables:
                     for mt in mixed_tabs.tables:
-                        # STABILITY GATE: Only accept the fallback table if it preserves columns
-                        # We allow a small drop (up to 2 columns) to handle noisy initial headers (Page 17),
-                        # but enforce a hard floor of 5 to protect 5-column tables (Page 60+).
-                        if len(mt.header.cells) >= max(5, len(t.header.cells) - 2) and len(mt.rows) > len(best_t.rows) + 2:
+                        # STABILITY GATE: Only accept the fallback table if it preserves all columns
+                        if len(mt.header.cells) >= len(t.header.cells) and len(mt.rows) > len(best_t.rows) + 2:
                             if abs(mt.bbox[0] - t.bbox[0]) < 100:
                                 best_t = mt
                 candidates.append(best_t)
