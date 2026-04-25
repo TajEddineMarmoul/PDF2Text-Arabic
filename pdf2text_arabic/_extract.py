@@ -700,7 +700,6 @@ def extract_page(
     on_empty: Literal["ignore", "warn", "ocr", "auto"] = "warn",
     table_strategy: str | None = None,
     gemini_model: str = DEFAULT_GEMINI_MODEL,
-    prev_table_state: dict | None = None,
 ) -> tuple[str, dict | None]:
     """Extract corrected Arabic text from one PyMuPDF page.
 
@@ -783,7 +782,7 @@ def extract_page(
     # 4. SELECTABLE EXTRACTION
     if effective_mode != "ocr":
         table_entries, t_bboxes, last_table_state = extract_tables(
-            page, clip=clip, strategy=table_strategy, prev_table_state=prev_table_state
+            page, clip=clip, strategy=table_strategy
         )
 
         # Add Tables
@@ -896,19 +895,17 @@ def extract_pdf_result(
         raise InvalidPDFPathError(f"Could not open PDF: {pdf_path}") from exc
 
     pages, empty_pages, mixed_pages, warnings = [], [], [], []
-    table_state = None
-
     for page in doc:
         page_no = _page_number(page)
         clip = _compute_clip(page, crop_top, crop_bottom, crop_unit, auto_crop_top, auto_crop_bottom)
         is_empty = _is_empty_page(page, clip)
         is_mixed = (not is_empty) and _has_content_images(page, clip)
 
-        text, table_state = extract_page(
+        text, _ = extract_page(
             page, crop_top=crop_top, crop_bottom=crop_bottom, crop_unit=crop_unit,
             auto_crop_top=auto_crop_top, auto_crop_bottom=auto_crop_bottom,
             detect_footer=detect_footer, on_empty=on_empty, table_strategy=table_strategy,
-            gemini_model=gemini_model, prev_table_state=table_state,
+            gemini_model=gemini_model,
         )
 
 

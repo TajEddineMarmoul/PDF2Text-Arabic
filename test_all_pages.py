@@ -17,11 +17,10 @@ def process_full_pdf(pdf_path):
     doc_text = fitz.open(pdf_path)
     doc_vis = fitz.open(pdf_path)
     
-    table_state = None
     for p_num in range(len(doc_text)):
         # 1. Force a PRISTINE page reload for text extraction
         page_text = doc_text.load_page(p_num)
-        text, table_state = extract_page(page_text, prev_table_state=table_state)
+        text, _ = extract_page(page_text)
         
         txt_path = os.path.join(pdf_out_dir, f"page_{p_num+1:03d}.txt")
         with open(txt_path, "w", encoding="utf-8") as f:
