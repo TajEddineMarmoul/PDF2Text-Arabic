@@ -20,16 +20,12 @@ _DIGIT_ARABIC_RE = re.compile(r"(\d)([\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF])"
 _SPACES_RE = re.compile(r"[ \t]+")
 _NEWLINES_RE = re.compile(r"\n{3,}")
 
-# Arabic letters that do NOT join to the next letter (their final/isolated
-# form is the same regardless of what follows).  Any gap after these letters
-# is naturally present and common inside words; any gap after a letter NOT in
-# this set is suspicious because the letters should visually connect.
+# Arabic letters that do NOT join to the next letter
 _NON_JOINING_FORWARD = set("اأإآدذرزوؤةىء\u0671")
 
 # ---------------------------------------------------------------------------
 # Public functions
 # ---------------------------------------------------------------------------
-
 
 def clean_arabic(text: str) -> str:
     """Post-process extracted text: normalize, strip invisibles, fix spacing."""
@@ -43,13 +39,8 @@ def clean_arabic(text: str) -> str:
     text = _NEWLINES_RE.sub("\n\n", text)
     return text
 
-
 def merge_lines_by_y(lines: list[dict]) -> list[dict]:
-    """Merge rawdict lines that share the same vertical position into rows.
-
-    PyMuPDF frequently splits one visual text row into multiple rawdict
-    "lines" at the same y-coordinate.  This merges them back together.
-    """
+    """Merge rawdict lines that share the same vertical position into rows."""
     if not lines:
         return []
 
@@ -57,7 +48,8 @@ def merge_lines_by_y(lines: list[dict]) -> list[dict]:
     for line in lines:
         cy = (line["bbox"][1] + line["bbox"][3]) / 2
         h = line["bbox"][3] - line["bbox"][1]
-        tolerance = max(2.0, h * 0.3)
+        # Use a consistent 3px tolerance for row merging
+        tolerance = 3.0
 
         merged = False
         for row in rows:
@@ -74,47 +66,58 @@ def merge_lines_by_y(lines: list[dict]) -> list[dict]:
 
     return rows
 
-
 def build_row_text(spans: list[dict]) -> str:
-    """Build text from merged spans by spatial analysis.
-
-    Chars are sorted by x-position (descending for RTL, ascending for LTR).
-    Spaces are inserted where spatial gaps exceed a threshold.  LTR digit
-    runs within RTL text are detected and reversed to restore correct order.
-    """
+    """Build text from merged spans by spatial analysis."""
     all_chars: list[dict] = []
     for span in spans:
         all_chars.extend(span.get("chars", []))
-    all_chars = fix_zero_width_clusters(all_chars)
-
+    
     if not all_chars:
         return ""
+        
+    all_chars = fix_zero_width_clusters(all_chars)
 
-    # Heuristic for RTL: compare Arabic letters vs Latin letters.
-    # We ignore digits, symbols, and punctuation when deciding the base text direction
-    # because digits can appear in both RTL and LTR contexts and shouldn't flip the line.
+    # Heuristic for RTL: compare Arabic letters vs Latin letters
     arabic_count = sum(1 for c in all_chars if is_arabic(c["c"]))
     latin_count = sum(1 for c in all_chars if c["c"].isalpha() and not is_arabic(c["c"]))
-
-    # Default to RTL in this Arabic-first tool unless Latin letters strictly outnumber Arabic ones
     is_rtl = arabic_count >= latin_count
-    if is_rtl:
-        sorted_chars = sorted(all_chars, key=lambda c: -c["bbox"][0])
-    else:
-        sorted_chars = sorted(all_chars, key=lambda c: c["bbox"][0])
 
-    widths = [
-        c["bbox"][2] - c["bbox"][0]
-        for c in sorted_chars
-        if (c["bbox"][2] - c["bbox"][0]) > 0.5
-    ]
+    # STABILIZED SORTING: Use Proximity Clustering for vertical grouping
+    # This prevents minor Y-jitter from flipping letters.
+    all_chars.sort(key=lambda c: c["bbox"][1]) # Sort by Y
+    rows = []
+    if all_chars:
+        current_row = [all_chars[0]]
+        for i in range(1, len(all_chars)):
+            c = all_chars[i]
+            # If char is within 3px of any char in the current row, it's the same line
+            if abs(c["bbox"][1] - current_row[-1]["bbox"][1]) < 3.0:
+                current_row.append(c)
+            else:
+                rows.append(current_row)
+                current_row = [c]
+        rows.append(current_row)
+
+    # Sort each row horizontally
+    sorted_chars = []
+    for row in rows:
+        if is_rtl:
+            # RTL: largest X first (right to left).
+            # We use a 1.0px snap to handle horizontal jitter in tables.
+            row.sort(key=lambda c: (-round(c["bbox"][0]), -c["bbox"][1]))
+        else:
+            # LTR: smallest X first (left to right)
+            row.sort(key=lambda c: (round(c["bbox"][0]), c["bbox"][1]))
+        sorted_chars.extend(row)
+
+    widths = [c["bbox"][2] - c["bbox"][0] for c in sorted_chars if (c["bbox"][2] - c["bbox"][0]) > 0.5]
     avg_width = median(widths) if widths else 6.0
     space_threshold = avg_width * 0.6
 
     parts: list[str] = []
-    prev_x0: float | None = None
-    prev_x1: float | None = None
-    prev_c: str | None = None
+    prev_x0 = None
+    prev_x1 = None
+    prev_c = None
     had_space = False
 
     i = 0
@@ -133,25 +136,19 @@ def build_row_text(spans: list[dict]) -> str:
                 gap = prev_x0 - x1
             else:
                 gap = x0 - prev_x1
-            # If the previous Arabic letter joins forward to this Arabic
-            # letter, they belong to the same word — require a much larger
-            # gap to split them (kashida-stretched connections can otherwise
-            # be wider than space_threshold).
-            if (
-                prev_c is not None
-                and is_arabic(prev_c)
-                and prev_c not in _NON_JOINING_FORWARD
-                and is_arabic(c)
-            ):
+            
+            # Connection check
+            if (prev_c is not None and is_arabic(prev_c) and prev_c not in _NON_JOINING_FORWARD and is_arabic(c)):
                 threshold = space_threshold * 3.0
             else:
                 threshold = space_threshold
+                
             if gap > threshold or (had_space and gap > 0.5):
                 parts.append(" ")
             had_space = False
 
         if is_rtl and (c.isdigit() or c in ".,-/"):
-            ltr_run: list[str] = []
+            ltr_run = []
             j = i
             while j < len(sorted_chars):
                 sc = sorted_chars[j]["c"]
@@ -163,15 +160,11 @@ def build_row_text(spans: list[dict]) -> str:
             ltr_run.reverse()
             parts.append("".join(ltr_run))
             last = sorted_chars[j - 1]
-            prev_x0 = last["bbox"][0]
-            prev_x1 = last["bbox"][2]
-            prev_c = last["c"]
+            prev_x0, prev_x1, prev_c = last["bbox"][0], last["bbox"][2], last["c"]
             i = j
         else:
             parts.append(c)
-            prev_x0 = x0
-            prev_x1 = x1
-            prev_c = c
+            prev_x0, prev_x1, prev_c = x0, x1, c
             i += 1
 
     return "".join(parts)

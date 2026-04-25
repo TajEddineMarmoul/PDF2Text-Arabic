@@ -402,6 +402,40 @@ def extract_tables(
         _format_rag_table(grid, table.bbox[1], results)
 
     # Prepare state for next page
+    if not candidates:
+        return [], [], None
+
+    # FINAL QUALITY FILTER: Discard tables that are layout artifacts
+    final_results = []
+    final_bboxes = []
+    for (y, ttext), bbox in zip(results, bboxes):
+        # 1. Check Column Utilization
+        rows = [r.split("|") for r in ttext.split("\n")]
+        if not rows: continue
+        num_cols = len(rows[0])
+        col_has_content = [False] * num_cols
+        for r in rows:
+            for ci, cell in enumerate(r):
+                if cell.strip():
+                    col_has_content[ci] = True
+        
+        utilization = sum(col_has_content) / num_cols
+        # Layout artifacts usually have only 1 or 2 columns with text out of 7+
+        if utilization < 0.4:
+            continue
+
+        # 2. Check Density (Chars vs Pipes)
+        pipe_count = ttext.count("|")
+        char_count = len(re.sub(r"[\|\s]+", "", ttext))
+        if char_count < (pipe_count * 0.5):
+            continue
+
+        final_results.append((y, ttext))
+        final_bboxes.append(bbox)
+
+    if not final_results:
+        return [], [], None
+
     last = candidates[-1]
     # Re-extract headers for the state to ensure they are the original ones
     last_raw = last.extract()
@@ -420,7 +454,7 @@ def extract_tables(
         "y1": last.bbox[3]
     }
 
-    return results, bboxes, last_table_state
+    return final_results, final_bboxes, last_table_state
 
 
 def _format_rag_table(

@@ -58,35 +58,50 @@ def _reverse_cluster(cluster: list[dict], reposition_all: bool = False) -> None:
 
 
 def fix_zero_width_clusters(chars: list[dict]) -> list[dict]:
-    """Reverse zero-width and overlapping Arabic clusters from ligature decomposition.
-
-    Four overlap patterns are detected and fixed:
-
-    - Zero-width: consecutive zero-width Arabic chars (w < 0.5) followed by
-      one real-width char.  Reversed as a cluster.
-    - Lam-Alef ligature: an alef variant (ا/أ/إ/آ) followed by a lam (ل)
-      where the lam inherits the full ligature width (ratio > 1.8×).
-      Swapped to restore logical RTL order (لا instead of ال).
-    - Exact-overlap: real-width Arabic chars at the same x-position
-      (diff < 0.02).  Handled as a pair or reversed as a multi-char cluster.
-    - Near-overlap: a char overlapping with the previous char (diff 0.02–1.5)
-      AND adjacent to the next char.  Repositioned past the next char.
+    """Surgically fix zero-width and overlapping Arabic clusters.
+    
+    Now includes a pre-pass to de-duplicate bold rendering clones and 
+    uses Unicode category checks for true diacritic merging.
     """
     if not chars:
         return chars
 
+    # --- Phase 0: Spatial De-duplication (Remove bold clones) ---
+    # Many PDFs render bold text by drawing the same char multiple times
+    # with < 1.0px offsets. This pass filters them out globally for the line.
+    unique_chars: list[dict] = []
+    for c in chars:
+        is_clone = False
+        # Check against already accepted characters in this line
+        for prev in unique_chars:
+            if c["c"] == prev["c"]:
+                b1, b2 = c["bbox"], prev["bbox"]
+                # Increased threshold to 1.5px to catch wider bold offsets
+                dx = abs((b1[0]+b1[2])/2 - (b2[0]+b2[2])/2)
+                dy = abs((b1[1]+b1[3])/2 - (b2[1]+b2[3])/2)
+                if dx < 1.5 and dy < 1.5:
+                    is_clone = True
+                    break
+        if not is_clone:
+            unique_chars.append(c)
+    
+    chars = unique_chars
     result: list[dict] = []
     i = 0
     while i < len(chars):
         w = chars[i]["bbox"][2] - chars[i]["bbox"][0]
 
         # --- Zero-width cluster ---
-        if w < 0.5 and is_arabic(chars[i]["c"]):
+        # Only merge if it's a Unicode Mark (diacritic). 
+        # Real letters with 0-width metadata are preserved as standalone chars.
+        is_mark = unicodedata.category(chars[i]["c"][0]).startswith("M")
+        if w < 0.5 and is_mark and is_arabic(chars[i]["c"]):
             cluster = [chars[i]]
             j = i + 1
             while j < len(chars):
                 jw = chars[j]["bbox"][2] - chars[j]["bbox"][0]
-                if jw < 0.5 and is_arabic(chars[j]["c"]):
+                j_is_mark = unicodedata.category(chars[j]["c"][0]).startswith("M")
+                if jw < 0.5 and j_is_mark and is_arabic(chars[j]["c"]):
                     cluster.append(chars[j])
                     j += 1
                 else:

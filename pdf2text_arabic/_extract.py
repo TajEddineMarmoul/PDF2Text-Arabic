@@ -719,24 +719,22 @@ def extract_page(
 
     # 2. FOOTER DETECTION
     footer_y = None
-    footnote_pieces: list[tuple[float, float, float, float, str]] = []
+    footnote_content = ""
     
     if detect_footer:
         footer_y, _ = detect_footer_y(page, clip, table_bboxes=table_bboxes)
         if footer_y is not None:
             apply_crop = True
-            # Always check against tables to avoid cutting in the middle of data
             for ty0, ty1 in [(t.y0, t.y1) for t in table_bboxes]:
                 if ty0 <= footer_y <= ty1:
                     apply_crop = False
                     break
             if apply_crop:
-                # 2.1 Extract ONLY meaningful Footnotes separately
+                # 2.1 Extract Footnote content separately
                 footnote_clip = fitz.Rect(clip.x0, footer_y, clip.x1, clip.y1)
                 f_raw = page.get_text("rawdict", clip=footnote_clip)
                 
-                # Determine body tips for filtering
-                # (We do a quick scan of the whole page to find tips)
+                # Determine body tips for clean removal
                 temp_raw = page.get_text("rawdict")
                 temp_body_size = _body_font_size(temp_raw, table_bboxes)
                 tips = set()
@@ -752,22 +750,20 @@ def extract_page(
                     if "lines" not in b: continue
                     merged_f = merge_lines_by_y(b["lines"])
                     for r in merged_f:
-                        f_text = clean_arabic(build_row_text(r["spans"])).strip()
+                        f_spans = [s for s in r["spans"] if not _is_superscript(s, temp_body_size)]
+                        f_text = clean_arabic(build_row_text(f_spans)).strip()
                         if not f_text: continue
                         
-                        # FILTER: Only keep if it looks like a footnote (starts with a tip)
-                        # OR if it's a continuation of a previously started footnote.
-                        starts_with_tip = any(f_text.startswith(t) for t in tips if t.isdigit())
+                        # Remove leading marker and junk
+                        f_text = re.sub(r'^(\d+)\s*', '', f_text)
                         is_legal_junk = "الجريدة الرسمية" in f_text or _is_page_number_text(f_text)
-                        
-                        if starts_with_tip or (f_lines and not is_legal_junk):
-                            if not is_legal_junk:
-                                f_lines.append(f_text)
+                        if f_text and not is_legal_junk:
+                            f_lines.append(f_text)
 
                 if f_lines:
-                    footnote_pieces.append((footer_y, 9999, clip.x0, clip.x1, "\n".join(f_lines)))
+                    footnote_content = "\n".join(f_lines)
 
-                # 2.2 Shrink clip to exclude footer
+                # 2.2 Shrink clip to exclude footer from main body extraction
                 clip = fitz.Rect(clip.x0, clip.y0, clip.x1, footer_y - 1)
 
     # 3. CONTENT DETECTION
@@ -828,28 +824,9 @@ def extract_page(
             if lines_text:
                 pieces.append((by0, by1, bx0, bx1, "\n".join(lines_text)))
         
-        # Add Footnotes at the end
-        if footnote_pieces:
-            # Clean superscript markers from the footnote content as well
-            cleaned_footnotes = []
-            for f_y, f_y1, f_x0, f_x1, f_text in footnote_pieces:
-                # We re-process the footnote clip to filter spans
-                f_clip = fitz.Rect(f_x0, f_y, f_x1, clip.y1)
-                f_raw = page.get_text("rawdict", clip=f_clip)
-                f_lines = []
-                for b in f_raw["blocks"]:
-                    if "lines" not in b: continue
-                    merged_f = merge_lines_by_y(b["lines"])
-                    for r in merged_f:
-                        # Use body_size for consistency in tip detection
-                        f_spans = [s for s in r["spans"] if not _is_superscript(s, body_size)]
-                        f_row_text = clean_arabic(build_row_text(f_spans)).strip()
-                        if f_row_text:
-                            f_lines.append(f_row_text)
-                if f_lines:
-                    cleaned_footnotes.append((f_y, 9999, f_x0, f_x1, "\n".join(f_lines)))
-            
-            pieces.extend(cleaned_footnotes)
+        # Add Footnote Content at the absolute end
+        if footnote_content:
+            pieces.append((footer_y, 9999, clip.x0, clip.x1, footnote_content))
 
     # 5. OCR EXTRACTION
     if effective_mode == "ocr":

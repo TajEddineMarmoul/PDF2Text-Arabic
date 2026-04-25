@@ -13,21 +13,23 @@ def process_full_pdf(pdf_path):
     os.makedirs(pdf_out_dir, exist_ok=True)
     
     print(f"\nProcessing Entire PDF: {pdf_name}")
-    # Open a fresh document for text extraction
+    # Open documents
     doc_text = fitz.open(pdf_path)
-    # Open a separate document for visual debugging
     doc_vis = fitz.open(pdf_path)
     
     table_state = None
     for p_num in range(len(doc_text)):
-        # 1. Extract Text from a CLEAN page
-        text, table_state = extract_page(doc_text[p_num], prev_table_state=table_state)
+        # 1. Force a PRISTINE page reload for text extraction
+        page_text = doc_text.load_page(p_num)
+        text, table_state = extract_page(page_text, prev_table_state=table_state)
+        
         txt_path = os.path.join(pdf_out_dir, f"page_{p_num+1:03d}.txt")
         with open(txt_path, "w", encoding="utf-8") as f:
             f.write(text)
 
-        # 2. Generate Visual Debug from the other document copy
-        pix = get_debug_pixmap(doc_vis[p_num], dpi=120)
+        # 2. Use a separate page instance for visuals
+        page_vis = doc_vis.load_page(p_num)
+        pix = get_debug_pixmap(page_vis, dpi=120)
         img_path = os.path.join(pdf_out_dir, f"page_{p_num+1:03d}.png")
         pix.save(img_path)
             

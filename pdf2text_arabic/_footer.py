@@ -156,20 +156,20 @@ def _detect_footer_by_smart_markers(page, clip: fitz.Rect, tips: dict[str, float
     if not tips:
         return None
         
-    footer_zone_y = clip.y1 - (clip.height * 0.35)
+    lowest_tip_y = max(tips.values())
     blocks = page.get_text("blocks", clip=clip)
     match_ys = []
     
     for b in blocks:
         bx0, by0, bx1, by1, text = b[:5]
-        if by0 < footer_zone_y:
+        if by0 <= lowest_tip_y:
             continue
             
         match = re.match(r"^(\d+)", text.strip())
         if match:
             num = match.group(1)
-            # COORDINATE LINKAGE: Marker must match a tip AND sit below its lowest body usage
-            if num in tips and by0 > tips[num]:
+            # COORDINATE LINKAGE: Marker must match a tip and sit below all body tips.
+            if num in tips:
                 match_ys.append(by0)
 
     if match_ys:
