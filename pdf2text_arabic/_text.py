@@ -33,6 +33,7 @@ _NON_JOINING_FORWARD = set("اأإآدذرزوؤةىء\u0671")
 
 def clean_arabic(text: str) -> str:
     """Post-process extracted text: normalize, strip invisibles, fix spacing."""
+    text = text.replace("\uf02d", "-")
     text = unicodedata.normalize("NFKC", text)
     text = _ZW_RE.sub("", text)
     text = text.replace("\u0640", "")

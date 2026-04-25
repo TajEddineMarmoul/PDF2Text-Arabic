@@ -299,6 +299,26 @@ def extract_tables(
     # Sort candidates by vertical position
     candidates.sort(key=lambda t: t.bbox[1])
 
+    # CONTAINER SECURITY: Discard tables that fully wrap other tables.
+    # This prevents layout containers (like 2-column article wrappers) 
+    # from being extracted as tables if they contain real data tables.
+    leaf_candidates = []
+    for i, t1 in enumerate(candidates):
+        is_container = False
+        r1 = fitz.Rect(t1.bbox)
+        for j, t2 in enumerate(candidates):
+            if i == j: continue
+            r2 = fitz.Rect(t2.bbox)
+            # If t1 fully contains t2, then t1 is just a layout artifact.
+            # We use a tiny 1px margin to handle rounding errors.
+            if r1.contains(r2 + fitz.Rect(1, 1, -1, -1)):
+                is_container = True
+                break
+        if not is_container:
+            leaf_candidates.append(t1)
+    
+    candidates = leaf_candidates
+
     for i, table in enumerate(candidates):
         t_bbox = fitz.Rect(table.bbox)
         if clip is not None:
