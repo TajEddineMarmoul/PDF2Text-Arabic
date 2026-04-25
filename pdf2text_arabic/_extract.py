@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import logging
 from pathlib import Path
-import tempfile
+from statistics import median
+from dataclasses import dataclass
 from typing import Any, Callable, Literal
 import re
 import fitz
@@ -135,7 +135,7 @@ def _body_font_size(
 
     Returns 0 if no usable text is found (caller should skip filtering).
     """
-    size_chars: dict[int, int] = {}
+    sizes: list[float] = []
     for block in rawdict.get("blocks", []):
         if "lines" not in block:
             continue
@@ -152,16 +152,16 @@ def _body_font_size(
             continue
         for line in block.get("lines", []):
             for span in line.get("spans", []):
-                txt = span.get("text", "")
+                txt = "".join(c.get("c", "") for c in span.get("chars", [])).strip()
                 if not txt or not txt.strip():
                     continue
-                sz = round(span.get("size", 0))
+                sz = span.get("size", 0)
                 if sz >= 20:  # skip headings
                     continue
-                size_chars[sz] = size_chars.get(sz, 0) + len(txt)
-    if not size_chars:
+                sizes.extend([sz] * len(txt))
+    if not sizes:
         return 0
-    return max(size_chars.items(), key=lambda item: item[1])[0]
+    return median(sizes)
 
 
 # ---------------------------------------------------------------------------
@@ -446,7 +446,7 @@ def _merge_regions_safely(page: fitz.Page, regions: list[fitz.Rect]) -> list[fit
                 min(current.x0, next_rect.x0),
                 current.y1,
                 max(current.x1, next_rect.x1),
-                next_rect.y0
+                next_rect.y0,
             )
 
             # If the gap is tiny (overlap or < 2px), just merge
@@ -461,7 +461,7 @@ def _merge_regions_safely(page: fitz.Page, regions: list[fitz.Rect]) -> list[fit
 
     merged.append(current)
 
-    # Final cleanup: If we still have many regions and the page is mostly empty, 
+    # Final cleanup: If we still have many regions and the page is mostly empty,
     # just take the bounding box of everything.
     if len(merged) > 10:
         full_text = page.get_text("text").strip()
@@ -485,9 +485,7 @@ def _image_only_regions(page: fitz.Page, clip: fitz.Rect) -> list[fitz.Rect]:
     # 1. Find all selectable text blocks in the clip
     blocks: list[tuple[Any, ...]] = page.get_text("blocks", clip=clip)  # type: ignore[assignment]
     text_bboxes = [
-        fitz.Rect(b[:4])
-        for b in blocks
-        if b[6] == 0 and b[4].strip()  # type 0 is text
+        fitz.Rect(b[:4]) for b in blocks if b[6] == 0 and b[4].strip()  # type 0 is text
     ]
 
     regions: list[fitz.Rect] = []
@@ -529,7 +527,6 @@ def _image_only_regions(page: fitz.Page, clip: fitz.Rect) -> list[fitz.Rect]:
 
     # 3. Merge fragmented regions safely
     return _merge_regions_safely(page, regions)
-
 
 
 def _has_content_images(page: fitz.Page, clip: fitz.Rect) -> bool:
@@ -706,7 +703,9 @@ def extract_page(
     Returns (text, last_table_state).
     """
     # 1. INITIAL CROP
-    clip = _compute_clip(page, crop_top, crop_bottom, crop_unit, auto_crop_top, auto_crop_bottom)
+    clip = _compute_clip(
+        page, crop_top, crop_bottom, crop_unit, auto_crop_top, auto_crop_bottom
+    )
 
     # 1.5. PRE-EXTRACT TABLES
     kwargs: dict[str, Any] = {"clip": clip}
@@ -718,8 +717,7 @@ def extract_page(
 
     # 2. FOOTER DETECTION
     footer_y = None
-    footnote_content = ""
-    
+
     if detect_footer:
         footer_y, _ = detect_footer_y(page, clip, table_bboxes=table_bboxes)
         if footer_y is not None:
@@ -729,47 +727,14 @@ def extract_page(
                     apply_crop = False
                     break
             if apply_crop:
-                # 2.1 Extract Footnote content separately
-                footnote_clip = fitz.Rect(clip.x0, footer_y, clip.x1, clip.y1)
-                f_raw = page.get_text("rawdict", clip=footnote_clip)
-                
-                # Determine body tips for clean removal
-                temp_raw = page.get_text("rawdict")
-                temp_body_size = _body_font_size(temp_raw, table_bboxes)
-                tips = set()
-                for b in temp_raw["blocks"]:
-                    if "lines" not in b: continue
-                    for l in b["lines"]:
-                        for s in l["spans"]:
-                            if _is_superscript(s, temp_body_size):
-                                tips.add("".join(c["c"] for c in s["chars"]).strip())
-
-                f_lines = []
-                for b in f_raw["blocks"]:
-                    if "lines" not in b: continue
-                    merged_f = merge_lines_by_y(b["lines"])
-                    for r in merged_f:
-                        f_spans = [s for s in r["spans"] if not _is_superscript(s, temp_body_size)]
-                        f_text = clean_arabic(build_row_text(f_spans)).strip()
-                        if not f_text: continue
-                        
-                        # Remove leading marker and junk
-                        f_text = re.sub(r'^(\d+)\s*', '', f_text)
-                        is_legal_junk = "الجريدة الرسمية" in f_text or _is_page_number_text(f_text)
-                        if f_text and not is_legal_junk:
-                            f_lines.append(f_text)
-
-                if f_lines:
-                    footnote_content = "\n".join(f_lines)
-
-                # 2.2 Shrink clip to exclude footer from main body extraction
+                # Shrink clip to exclude footer/reference text from extraction.
                 clip = fitz.Rect(clip.x0, clip.y0, clip.x1, footer_y - 1)
 
     # 3. CONTENT DETECTION
     is_empty_selectable = _is_empty_page(page, clip)
     mixed_regions = _image_only_regions(page, clip)
 
-    # USER REQUEST: If the page has ANY part that needs OCR (mixed_regions), 
+    # USER REQUEST: If the page has ANY part that needs OCR (mixed_regions),
     # or if the page is completely empty, we upgrade the entire page to full OCR.
     # This prevents messy merging of PyMuPDF text and Gemini text.
     effective_mode = on_empty
@@ -795,12 +760,15 @@ def extract_page(
         page_num_zone_y = clip.y1 - clip.height * _PAGE_NUMBER_BOTTOM_PCT
 
         for block in rawdict["blocks"]:
-            if "lines" not in block: continue
+            if "lines" not in block:
+                continue
             bx0, by0, bx1, by1 = block["bbox"]
 
             # Skip if inside a table
-            if any(tx0 <= (bx0 + bx1) / 2 <= tx1 and ty0 <= (by0 + by1) / 2 <= ty1
-                   for tx0, ty0, tx1, ty1 in t_bboxes):
+            if any(
+                tx0 <= (bx0 + bx1) / 2 <= tx1 and ty0 <= (by0 + by1) / 2 <= ty1
+                for tx0, ty0, tx1, ty1 in t_bboxes
+            ):
                 continue
 
             rows = merge_lines_by_y(block["lines"])
@@ -822,10 +790,6 @@ def extract_page(
 
             if lines_text:
                 pieces.append((by0, by1, bx0, bx1, "\n".join(lines_text)))
-        
-        # Add Footnote Content at the absolute end
-        if footnote_content:
-            pieces.append((footer_y, 9999, clip.x0, clip.x1, footnote_content))
 
     # 5. OCR EXTRACTION
     if effective_mode == "ocr":
@@ -834,7 +798,8 @@ def extract_page(
             pieces.append((y_top, clip.y1, clip.x0, clip.x1, ocr_text))
 
     # 6. FINAL RECONSTRUCTION
-    if not pieces: return "", last_table_state
+    if not pieces:
+        return "", last_table_state
 
     final_reading_order = order_reading_rtl(
         pieces,
@@ -859,9 +824,15 @@ def extract_pdf(
     gemini_model: str = DEFAULT_GEMINI_MODEL,
 ) -> str:
     return extract_pdf_result(
-        pdf_path, crop_top=crop_top, crop_bottom=crop_bottom, crop_unit=crop_unit,
-        auto_crop_top=auto_crop_top, auto_crop_bottom=auto_crop_bottom,
-        detect_footer=detect_footer, on_empty=on_empty, table_strategy=table_strategy,
+        pdf_path,
+        crop_top=crop_top,
+        crop_bottom=crop_bottom,
+        crop_unit=crop_unit,
+        auto_crop_top=auto_crop_top,
+        auto_crop_bottom=auto_crop_bottom,
+        detect_footer=detect_footer,
+        on_empty=on_empty,
+        table_strategy=table_strategy,
         gemini_model=gemini_model,
     ).text
 
@@ -897,17 +868,24 @@ def extract_pdf_result(
     pages, empty_pages, mixed_pages, warnings = [], [], [], []
     for page in doc:
         page_no = _page_number(page)
-        clip = _compute_clip(page, crop_top, crop_bottom, crop_unit, auto_crop_top, auto_crop_bottom)
+        clip = _compute_clip(
+            page, crop_top, crop_bottom, crop_unit, auto_crop_top, auto_crop_bottom
+        )
         is_empty = _is_empty_page(page, clip)
         is_mixed = (not is_empty) and _has_content_images(page, clip)
 
         text, _ = extract_page(
-            page, crop_top=crop_top, crop_bottom=crop_bottom, crop_unit=crop_unit,
-            auto_crop_top=auto_crop_top, auto_crop_bottom=auto_crop_bottom,
-            detect_footer=detect_footer, on_empty=on_empty, table_strategy=table_strategy,
+            page,
+            crop_top=crop_top,
+            crop_bottom=crop_bottom,
+            crop_unit=crop_unit,
+            auto_crop_top=auto_crop_top,
+            auto_crop_bottom=auto_crop_bottom,
+            detect_footer=detect_footer,
+            on_empty=on_empty,
+            table_strategy=table_strategy,
             gemini_model=gemini_model,
         )
-
 
         if is_mixed:
             mixed_pages.append(page_no)

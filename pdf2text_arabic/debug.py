@@ -11,7 +11,6 @@ import re
 from typing import Any, Literal
 
 import fitz
-from IPython.display import Image, display
 
 from ._extract import (
     _PAGE_NUMBER_BOTTOM_PCT,
@@ -150,5 +149,7 @@ def draw_page_layout(
     **kwargs,
 ) -> None:
     """Render *page* with extraction overlays and show it inline."""
+    from IPython.display import Image, display
+
     pix = get_debug_pixmap(page, **kwargs)
     display(Image(data=pix.tobytes("png")))
