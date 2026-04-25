@@ -33,10 +33,9 @@ def clean_arabic(text: str) -> str:
     text = text.replace("\uf02d", "-")
     
     # GLOBAL LIGATURE CORRECTOR: Fix common 'Lam-Alef' decomposition artifacts
-    # (e.g. 'اإل' -> 'الإ', 'األ' -> 'الأ', 'اآلل' -> 'الآ')
-    text = text.replace("اإل", "الإ")
-    text = text.replace("األ", "الأ")
-    text = text.replace("اآلل", "الآ")
+    # Handles cases like 'اإل' -> 'الإ', 'اال' -> 'الا', and 'ا ا ل' (space jitter)
+    # Pattern: Alef + optional space + Alef variant + optional space + Lam
+    text = re.sub(r"ا\s*([\u0622\u0623\u0625\u0627])\s*ل", r"ال\1", text)
     
     text = unicodedata.normalize("NFKC", text)
     text = _ZW_RE.sub("", text)
