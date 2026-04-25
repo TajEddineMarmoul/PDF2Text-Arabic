@@ -236,10 +236,70 @@ def _detect_footer_by_text_line(
             is_space_line = not stripped and len(raw_line_text) >= 30
             
             if is_text_line or is_space_line:
-                if _is_footer_separator_y(page, clip, y, tips):
+                if (
+                    _has_footer_text_immediately_below(page, clip, y)
+                    and _has_linked_reference_below(page, clip, y, tips)
+                ):
                     if best_y is None or y < best_y:
                         best_y = y
     return best_y
+
+
+def _separator_above_y(
+    page: fitz.Page,
+    clip: fitz.Rect,
+    y_limit: float,
+    table_bboxes: list[fitz.Rect] | None = None,
+) -> float | None:
+    """Find a nearby separator just above a confirmed footer marker."""
+    page_width = clip.x1 - clip.x0
+    min_line_width = page_width * 0.15
+    min_y = clip.y0 + clip.height * 0.45
+    max_gap = clip.height * 0.16
+    candidates: list[float] = []
+
+    def keep(y: float, x_mid: float) -> None:
+        if not (min_y <= y < y_limit and y_limit - y <= max_gap):
+            return
+        if table_bboxes and any(
+            t.y0 - 2 <= y <= t.y1 + 2 and t.x0 <= x_mid <= t.x1
+            for t in table_bboxes
+        ):
+            return
+        candidates.append(y)
+
+    for drawing in page.get_drawings():
+        for item in drawing.get("items", []):
+            if item[0] == "l":
+                p1, p2 = item[1], item[2]
+                if abs(p1.y - p2.y) < 2.0:
+                    width = abs(p1.x - p2.x)
+                    if width >= min_line_width:
+                        keep(max(p1.y, p2.y), (p1.x + p2.x) / 2)
+            elif item[0] == "re":
+                rect = item[1]
+                if rect.height < 3.0 and rect.width >= min_line_width:
+                    keep(rect.y0, rect.x0 + rect.width / 2)
+
+    dict_data = page.get_text("dict", clip=clip)
+    for block in dict_data.get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            if not line.get("spans"):
+                continue
+            line_text = "".join(span.get("text", "") for span in line["spans"]).strip()
+            raw_line_text = "".join(span.get("text", "") for span in line["spans"])
+            stripped = line_text.replace(" ", "")
+            is_text_line = len(stripped) >= 10 and all(c in "_-ـ." for c in stripped)
+            is_space_line = not stripped and len(raw_line_text) >= 30
+            if is_text_line or is_space_line:
+                bbox = fitz.Rect(line["bbox"])
+                keep(bbox.y0, (bbox.x0 + bbox.x1) / 2)
+
+    if not candidates:
+        return None
+    return max(candidates)
 
 
 def _detect_footer_by_smart_markers(page, clip: fitz.Rect, tips: dict[str, list[float]]) -> float | None:
@@ -351,6 +411,9 @@ def detect_footer_y(
     # 4. Strategy: Topmost Linked Reference (Using mapped coordinates)
     y = _detect_footer_by_smart_markers(page, clip, tips_map)
     if y is not None:
+        separator_y = _separator_above_y(page, clip, y, table_bboxes=table_bboxes)
+        if separator_y is not None:
+            return separator_y, True
         return y, True
 
     # 5. Global Font Size Clustering
