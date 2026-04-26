@@ -23,6 +23,12 @@ This library treats the page as a 2D layout problem, then rebuilds text for sear
 
 These examples were selected from the project debug output because they show different failure modes the library handles.
 
+### Clean Text Output (RAG-Ready)
+
+The extractor's primary goal is to produce perfectly ordered Arabic text and structured tables without any visual noise. This makes it ideal for LLM pipelines and RAG (Retrieval-Augmented Generation).
+
+<img src="assets/showcase_result_text.png" width="560" alt="Clean extracted text output" />
+
 ### Long Official Tables
 
 Selected from `قانون-المالية-2023/page_023.png` because it shows a large bordered table that spans nearly the whole page. The extractor keeps the table as pipe-separated rows instead of trying to turn it into markdown.
@@ -143,18 +149,20 @@ flowchart LR
     TXT --> CHR
 ```
 
-## Install
+## Quick Setup
+
+The easiest way to get started is by installing the package directly from PyPI.
 
 ```bash
 pip install pdf2text-arabic
 ```
 
-From source:
+### Install from source
 
 ```bash
+git clone https://github.com/TajEddineMarmoul/PDF2Text-Arabic.git
+cd PDF2Text-Arabic
 pip install .
-# or
-uv pip install .
 ```
 
 The current package configuration requires Python `>=3.13`.
@@ -443,4 +451,4 @@ If you use OCR, page images are sent to the configured Gemini model. Do not enab
 
 ## License
 
-No license file is currently present in this repository. Before publishing it as an open-source project, add a `LICENSE` file and update `pyproject.toml` with the chosen license. Until a license is added, the code is not explicitly licensed for reuse.
+MIT. See `LICENSE`.

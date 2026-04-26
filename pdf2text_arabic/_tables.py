@@ -223,18 +223,21 @@ def extract_tables(
     page,
     clip=None,
     strategy=None,
+    initial_tabs=None,
 ) -> tuple[list[tuple[float, str]], list[tuple], dict | None]:
     """Extract tables from a page using PyMuPDF's find_tables().
 
     Returns (table_entries, bboxes, None).
     """
-    kwargs = {}
-    if clip is not None:
-        kwargs["clip"] = clip
-    if strategy is not None:
-        kwargs["strategy"] = strategy
-
-    tabs = page.find_tables(**kwargs)
+    if initial_tabs is None:
+        kwargs = {}
+        if clip is not None:
+            kwargs["clip"] = clip
+        if strategy is not None:
+            kwargs["strategy"] = strategy
+        tabs = page.find_tables(**kwargs)
+    else:
+        tabs = initial_tabs
     
     candidates = []
     

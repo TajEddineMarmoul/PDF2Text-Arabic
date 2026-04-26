@@ -1,20 +1,14 @@
 [project]
 name = "pdf2text-arabic"
 version = "0.4.0"
-description = "Arabic PDF text extraction with ligature and RTL fixes"
+description = "Advanced Arabic-first PDF text extraction with layout repair, table reconstruction, and OCR fallback"
 readme = "README.md"
 requires-python = ">=3.13"
-authors = [
-    { name = "Taj Eddine Marmoul" },
-]
-keywords = [
-    "arabic",
-    "pdf",
-    "ocr",
-    "pymupdf",
-    "text-extraction",
-    "rtl",
-]
+authors = [{ name = "Taj Eddine Marmoul" }]
+keywords = ["arabic", "pdf", "ocr", "pymupdf", "text-extraction", "rtl"]
+license = "MIT"
+license-files = ["LICENSE"]
+
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -51,4 +45,3 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["pdf2text_arabic*"]
 exclude = ["assets*", "download*", "output*", "conductor*"]
-
