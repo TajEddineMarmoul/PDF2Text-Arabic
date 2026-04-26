@@ -671,8 +671,8 @@ wheels = [
 
 [[package]]
 name = "pdf2text-arabic"
-version = "0.1.6"
-source = { virtual = "." }
+version = "0.3.0"
+source = { editable = "." }
 dependencies = [
     { name = "dotenv" },
     { name = "google-genai" },
