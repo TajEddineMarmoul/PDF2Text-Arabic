@@ -271,8 +271,12 @@ def extract_tables(
                 best_t = t
                 if mixed_tabs.tables:
                     for mt in mixed_tabs.tables:
-                        # STABILITY GATE: Only accept the fallback table if it preserves all columns
-                        if len(mt.header.cells) >= len(t.header.cells) and len(mt.rows) > len(best_t.rows) + 2:
+                        # STABILITY GATE: keep normal tables strict. Only allow
+                        # a small column drop when the primary table is clearly
+                        # truncated vertically, because noisy headers can invent columns.
+                        primary_is_truncated = (clip.y1 - t.bbox[3]) > max(80.0, page.rect.height * 0.15)
+                        min_cols = max(5, len(t.header.cells) - 2) if primary_is_truncated else len(t.header.cells)
+                        if len(mt.header.cells) >= min_cols and len(mt.rows) > len(best_t.rows) + 2:
                             if abs(mt.bbox[0] - t.bbox[0]) < 100:
                                 best_t = mt
                 candidates.append(best_t)

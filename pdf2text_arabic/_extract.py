@@ -498,7 +498,7 @@ def _image_only_regions(page: fitz.Page, clip: fitz.Rect) -> list[fitz.Rect]:
 
         # If the intersection is tiny (e.g., symbols, footnote markers, logos), skip it.
         # We increase this threshold to avoid sending 15x15 pixel asterisks to an expensive OCR LLM.
-        if img_bbox.is_empty or img_bbox.width < 20 or img_bbox.height < 15:
+        if img_bbox.is_empty or img_bbox.width < 15 or img_bbox.height < 10:
             continue
 
         # If an image has significant text on top of it, we skip the OCR
