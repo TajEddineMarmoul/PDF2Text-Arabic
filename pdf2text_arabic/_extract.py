@@ -707,6 +707,14 @@ def extract_page(
         page, crop_top, crop_bottom, crop_unit, auto_crop_top, auto_crop_bottom
     )
 
+    # 1.5. PRE-EXTRACT TABLES
+    kwargs: dict[str, Any] = {"clip": clip}
+    if table_strategy is not None:
+        kwargs["strategy"] = table_strategy
+
+    tabs = page.find_tables(**kwargs)
+    table_bboxes = [fitz.Rect(t.bbox) for t in tabs.tables]
+
     # Keep the geometric crop separate from footer cropping. Full-page OCR
     # should use only crop_top/crop_bottom/auto-crop, never footer detection.
     original_clip = fitz.Rect(clip)
@@ -722,15 +730,6 @@ def extract_page(
     if on_empty == "auto" and (is_empty_selectable or mixed_regions):
         effective_mode = "ocr"
 
-    table_tabs = None
-    table_bboxes: list[fitz.Rect] = []
-    if effective_mode != "ocr":
-        kwargs: dict[str, Any] = {"clip": clip}
-        if table_strategy is not None:
-            kwargs["strategy"] = table_strategy
-        table_tabs = page.find_tables(**kwargs)
-        table_bboxes = [fitz.Rect(t.bbox) for t in table_tabs.tables]
-
     # 3. FOOTER DETECTION
     footer_y = None
 
@@ -745,7 +744,6 @@ def extract_page(
             if apply_crop:
                 # Shrink clip to exclude footer/reference text from extraction.
                 clip = fitz.Rect(clip.x0, clip.y0, clip.x1, footer_y - 1)
-                table_tabs = None
 
     pieces: list[tuple[float, float, float, float, str]] = []
     last_table_state = None
@@ -753,7 +751,7 @@ def extract_page(
     # 4. SELECTABLE EXTRACTION
     if effective_mode != "ocr":
         table_entries, t_bboxes, last_table_state = extract_tables(
-            page, clip=clip, strategy=table_strategy, initial_tabs=table_tabs
+            page, clip=clip, strategy=table_strategy
         )
 
         # Add Tables
@@ -801,7 +799,15 @@ def extract_page(
     if effective_mode == "ocr":
         ocr_results = run_ocr(page, [original_clip], model=gemini_model)
         for y_top, ocr_text in ocr_results:
-            pieces.append((original_clip.y0, original_clip.y1, original_clip.x0, original_clip.x1, ocr_text))
+            pieces.append(
+                (
+                    original_clip.y0,
+                    original_clip.y1,
+                    original_clip.x0,
+                    original_clip.x1,
+                    ocr_text,
+                )
+            )
 
     # 6. FINAL RECONSTRUCTION
     if not pieces:
