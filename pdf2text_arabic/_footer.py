@@ -125,11 +125,16 @@ def _is_footer_separator_y(
     )
 
 
-def _collect_superscript_tips(page: fitz.Page, clip: fitz.Rect, body_size: float) -> dict[str, list[float]]:
+def _collect_superscript_tips(
+    page: fitz.Page,
+    clip: fitz.Rect,
+    body_size: float,
+    raw_data: dict | None = None,
+) -> dict[str, list[float]]:
     """Find all small superscript digits and keep every Y-coordinate per number."""
     # Look at the top 95% of the page to find tips (superscripts)
     body_clip = fitz.Rect(clip.x0, clip.y0, clip.x1, clip.y0 + (clip.height * 0.95))
-    data = page.get_text("rawdict", clip=body_clip)
+    data = raw_data if raw_data is not None else page.get_text("rawdict", clip=body_clip)
     
     tips: dict[str, list[float]] = {}
     for block in data.get("blocks", []):
@@ -137,11 +142,14 @@ def _collect_superscript_tips(page: fitz.Page, clip: fitz.Rect, body_size: float
         block_spans = [
             span
             for line in block.get("lines", [])
+            if line.get("bbox", [0, 0, 0, 0])[1] < body_clip.y1
             for span in line.get("spans", [])
         ]
         block_text = "".join(_span_text(span) for span in block_spans)
         block_dominant_size = _dominant_size(block_spans)
         for line in block.get("lines", []):
+            if line.get("bbox", [0, 0, 0, 0])[1] >= body_clip.y1:
+                continue
             line_spans = line.get("spans", [])
             line_text = "".join(_span_text(span) for span in line_spans)
             # Calculate the dominant size in this specific line
@@ -177,18 +185,19 @@ def _collect_superscript_tips(page: fitz.Page, clip: fitz.Rect, body_size: float
 
 
 def _detect_footer_by_line(
-    page: fitz.Page, 
-    clip: fitz.Rect, 
+    page: fitz.Page,
+    clip: fitz.Rect,
     table_bboxes: list[fitz.Rect] | None = None,
     tips: dict[str, list[float]] | None = None,
+    drawings: list[dict] | None = None,
 ) -> float | None:
     """Strategy 1: Detect horizontal separator line."""
     page_width = clip.x1 - clip.x0
-    min_line_width = page_width * 0.15 
-    
-    drawings = page.get_drawings()
+    min_line_width = page_width * 0.15
+
+    drawings = drawings if drawings is not None else page.get_drawings()
     best_y = None
-    
+
     for drawing in drawings:
         for item in drawing.get("items", []):
             if item[0] == "l": # line
@@ -215,12 +224,15 @@ def _detect_footer_by_line(
 
 
 def _detect_footer_by_text_line(
-    page: fitz.Page, clip: fitz.Rect, tips: dict[str, list[float]] | None = None
+    page: fitz.Page,
+    clip: fitz.Rect,
+    tips: dict[str, list[float]] | None = None,
+    dict_data: dict | None = None,
 ) -> float | None:
     """Strategy 2: Detect text-based separator lines (e.g. '---', '___')."""
-    dict_data = page.get_text("dict", clip=clip)
+    dict_data = dict_data if dict_data is not None else page.get_text("dict", clip=clip)
     best_y = None
-    
+
     for block in dict_data.get("blocks", []):
         if block.get("type") != 0: continue
         for line in block.get("lines", []):
@@ -248,6 +260,8 @@ def _separator_above_y(
     clip: fitz.Rect,
     y_limit: float,
     table_bboxes: list[fitz.Rect] | None = None,
+    drawings: list[dict] | None = None,
+    dict_data: dict | None = None,
 ) -> float | None:
     """Find a nearby separator just above a confirmed footer marker."""
     page_width = clip.x1 - clip.x0
@@ -266,7 +280,8 @@ def _separator_above_y(
             return
         candidates.append(y)
 
-    for drawing in page.get_drawings():
+    drawings = drawings if drawings is not None else page.get_drawings()
+    for drawing in drawings:
         for item in drawing.get("items", []):
             if item[0] == "l":
                 p1, p2 = item[1], item[2]
@@ -279,7 +294,7 @@ def _separator_above_y(
                 if rect.height < 3.0 and rect.width >= min_line_width:
                     keep(rect.y0, rect.x0 + rect.width / 2)
 
-    dict_data = page.get_text("dict", clip=clip)
+    dict_data = dict_data if dict_data is not None else page.get_text("dict", clip=clip)
     for block in dict_data.get("blocks", []):
         if block.get("type") != 0:
             continue
