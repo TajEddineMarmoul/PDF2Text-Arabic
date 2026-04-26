@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.4.0](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/compare/v0.3.0...v0.4.0) (2026-04-26)
+
+
+### Features
+
+* add security layer to discard container tables during extraction ([244fcf8](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/commit/244fcf8dcbcf49048f044a8a62583828c7a1bb83))
+* add single page extraction and debug image saving functionality ([bccba9e](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/commit/bccba9efbcea19b44ad18f9ba6f0c66328a17ab6))
+* final audited version with robust footnote linkage and character cleaning ([5c5b430](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/commit/5c5b430238c36729f33ced79bd8f1df59af33975))
+
+
+### Bug Fixes
+
+* global ligature corrector for perfect Arabic text extraction ([e41b185](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/commit/e41b18537db027ea78dc7c6bde86dd54227e1f0a))
+* robust regex-based ligature corrector for Arabic text integrity ([3b95c27](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/commit/3b95c274fbd79fd93043fec453f8a36a355cc26c))
+
+## [0.3.0](https://github.com/crazytajdine/PDF2Text-Arabic/compare/v0.2.0...v0.3.0) (2026-04-25)
 ## [0.3.0](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/compare/v0.2.0...v0.3.0) (2026-04-25)
 
 
