@@ -4,6 +4,25 @@ version = "0.4.0"
 description = "Arabic PDF text extraction with ligature and RTL fixes"
 readme = "README.md"
 requires-python = ">=3.13"
+authors = [
+    { name = "Taj Eddine Marmoul" },
+]
+keywords = [
+    "arabic",
+    "pdf",
+    "ocr",
+    "pymupdf",
+    "text-extraction",
+    "rtl",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Text Processing",
+]
 dependencies = [
     "dotenv>=0.9.9",
     "google-genai>=1.73.1",
@@ -16,5 +35,20 @@ dependencies = [
     "requests>=2.33.1",
 ]
 
+[project.urls]
+Homepage = "https://github.com/TajEddineMarmoul/PDF2Text-Arabic"
+Repository = "https://github.com/TajEddineMarmoul/PDF2Text-Arabic"
+Issues = "https://github.com/TajEddineMarmoul/PDF2Text-Arabic/issues"
+Changelog = "https://github.com/TajEddineMarmoul/PDF2Text-Arabic/blob/master/CHANGELOG.md"
+
 [project.scripts]
 pdf2text-arabic = "pdf2text_arabic.cli:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["pdf2text_arabic*"]
+exclude = ["assets*", "download*", "output*", "conductor*"]
+
