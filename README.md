@@ -1,19 +1,66 @@
 # PDF2Text-Arabic
 
-Arabic PDF text extraction built on PyMuPDF. Fixes ligature decomposition, RTL ordering, table extraction, and other issues that make raw PyMuPDF output unusable for Arabic.
+Arabic-first PDF extraction for official documents, legal texts, financial laws, scanned pages, mixed Arabic/French tables, and footnote-heavy PDFs.
 
-## What it fixes
+The library is built on PyMuPDF, then adds Arabic-specific layout repair: RTL reading order, ligature cleanup, table reconstruction, footnote/footer cropping, page-header cropping, and optional full-page OCR for image-only or mixed pages.
 
-| # | Problem | Fix |
-|---|---------|-----|
-| 1 | **Ligature decomposition** — PyMuPDF breaks Arabic ligatures (الله, لأ, لإ) into LTR-ordered zero-width chars | Detects zero-width clusters, reverses to RTL order |
-| 1b | **Lam-Alef swap** — لا ligature decomposed as ال (alef before lam) | Detects width ratio, swaps to correct order |
-| 2 | **Presentation Forms** — Returns U+FB50–FDFF / U+FE70–FEFF instead of standard Arabic | NFKC normalization |
-| 3 | **Line splitting** — One visual line split into multiple rawdict lines at same y | Y-coordinate merging with tolerance |
-| 4 | **Number reversal** — RTL sorting reverses digit sequences (2019 → 9102) | Detects LTR digit runs, reverses back |
-| 5 | **Arabic↔digit spacing** — No space between Arabic text and numbers | Regex-inserts spaces at boundaries |
-| 6 | **Artifact spaces** — Space chars with overlapping bboxes cause false word breaks | Only honors spaces with physical gaps > 0.5px |
-| 7 | **Invisible chars** — Zero-width joiners, BOM, LTR/RTL marks, kashida | Stripped in post-processing |
+## Why This Exists
+
+Raw PDF text extraction is usually not enough for Arabic documents. Common failures include reversed words, broken `لا` / `الله` ligatures, split Arabic rows, missing superscript references, false table merges, footers mixed into body text, and scanned pages returning almost nothing.
+
+`pdf2text-arabic` focuses on producing text that is useful for search, RAG, legal analysis, and automation.
+
+## Feature Showcase
+
+### Full-page and long table extraction
+
+Large official tables are extracted as pipe-separated rows instead of markdown tables. This is easier for downstream parsers and LLM pipelines because empty cells remain explicit.
+
+<img src="assets/showcase_full_page_table.png" width="560" alt="Full-page Arabic table extraction" />
+
+### Side-by-side tables and article text
+
+The extractor keeps independent table regions separate instead of merging the whole page into one bad grid.
+
+<img src="assets/showcase_side_by_side_tables.png" width="560" alt="Side-by-side table extraction" />
+
+### Embedded tables inside legal articles
+
+Small tables inside normal prose are detected without converting the surrounding article into a table.
+
+<img src="assets/showcase_embedded_table.png" width="560" alt="Embedded table in legal text" />
+
+### Footnote and footer removal
+
+Superscript reference tips are matched to footer reference lines. The detected footer area is excluded from the body output.
+
+<img src="assets/showcase_footnotes.png" width="560" alt="Footnote detection and footer crop" />
+
+### OCR detection for scanned/image pages
+
+When `on_empty="auto"` sees a page or region that requires OCR, the page is sent to Gemini OCR instead of mixing weak selectable text with OCR text.
+
+<img src="assets/showcase_full_page_ocr.png" width="560" alt="Full-page OCR trigger" />
+
+For debugging, image-only regions can also be shown without forcing OCR:
+
+<img src="assets/showcase_image_regions.png" width="560" alt="Image-only region detection" />
+
+## What It Fixes
+
+| Problem | What the library does |
+|---|---|
+| Broken Arabic ligatures | Repairs decomposed ligatures and lam-alef ordering. |
+| Arabic presentation forms | Normalizes presentation-form characters to standard Arabic. |
+| Wrong RTL order | Reorders characters, spans, rows, and blocks for Arabic reading order. |
+| Reversed digit sequences | Keeps numeric runs such as `2023`, `1.14.44`, and money values readable. |
+| Split visual rows | Merges PyMuPDF raw lines that visually belong to one row. |
+| Mixed Arabic/French text | Preserves Arabic base direction while keeping Latin and numbers usable. |
+| Tables with weak borders | Falls back to targeted table detection when default PyMuPDF misses rows. |
+| Side-by-side tables | Uses physical bounding boxes to avoid page-wide table merges. |
+| Footnotes and references | Detects superscript tips and crops matching footer reference blocks. |
+| Scanned/image pages | Supports `warn`, `ignore`, `auto`, and `ocr` behavior for image-only content. |
+| Debugging extraction | Renders color-coded overlays showing text, tables, OCR regions, and footer crops. |
 
 ## Install
 
@@ -22,167 +69,245 @@ pip install pdf2text-arabic
 ```
 
 From source:
+
 ```bash
 pip install .
-# or with uv
+# or
 uv pip install .
 ```
 
-## Quick start
+Python `>=3.13` is required by the current package configuration.
 
-### Python API
+## Quick Start
+
+### Extract a PDF
 
 ```python
-from pdf2text_arabic import extract_pdf, extract_page
+from pdf2text_arabic import extract_pdf
 
-# Extract entire PDF
 text = extract_pdf("document.pdf")
-
-# With cropping (remove headers/page numbers)
-text = extract_pdf("document.pdf", crop_top=50, crop_bottom=30)
-
-# Crop by percentage
-text = extract_pdf("document.pdf", crop_top=5, crop_bottom=3, crop_unit="pct")
-
-# Disable footnote separator detection
-text = extract_pdf("document.pdf", detect_footer=False)
+print(text)
 ```
 
-### AI-friendly API (recommended for agents)
+### Extract with the recommended defaults explicitly
 
 ```python
-from pdf2text_arabic import extract_pdf_result, get_capabilities
+from pdf2text_arabic import extract_pdf
 
-caps = get_capabilities()
-result = extract_pdf_result("document.pdf", on_empty="warn")
-
-print(result.pages_total)
-print(result.pages_with_text)
-print(result.empty_pages)
-print(result.warnings)
-print(result.text)
+text = extract_pdf(
+    "document.pdf",
+    crop_top=8.0,
+    crop_bottom=4.5,
+    crop_unit="pct",
+    detect_footer=True,
+    on_empty="warn",
+)
 ```
 
-Agent contract:
-- Prefer `extract_pdf_result()` over parsing logs.
-- Do not manually reorder Arabic text after extraction.
-- Use `get_capabilities()` before enabling OCR-specific behavior.
+### Extract one page
 
-### Single page
+`extract_page()` returns `(text, last_table_state)`.
 
 ```python
 import fitz
 from pdf2text_arabic import extract_page
 
-doc = fitz.open("document.pdf")
-text = extract_page(doc[0], crop_top=50, crop_bottom=30)
-doc.close()
+with fitz.open("document.pdf") as doc:
+    text, _ = extract_page(doc[0])
+
+print(text)
+```
+
+### Structured result for automation
+
+Use this when an agent or pipeline needs warnings and page-level metadata.
+
+```python
+from pdf2text_arabic import extract_pdf_result
+
+result = extract_pdf_result("document.pdf", on_empty="warn")
+
+print(result.pages_total)
+print(result.pages_with_text)
+print(result.empty_pages)
+print(result.mixed_pages)
+print(result.warnings)
+print(result.text)
 ```
 
 ### CLI
 
 ```bash
-# Process all PDFs in a directory
+# Process every PDF in ./download into ./output/plain_text
 pdf2text-arabic -i ./download -o ./output/plain_text
 
-# Single file
-pdf2text-arabic -f document.pdf -o ./output
+# Process a single file
+pdf2text-arabic -f document.pdf -o ./output/plain_text
 
-# With cropping
-pdf2text-arabic -i ./download --crop-top 50 --crop-bottom 30
+# Disable footer detection
+pdf2text-arabic -f document.pdf --no-footer
 
-# Crop by percentage, no footer detection
-pdf2text-arabic -i ./download --crop-top 5 --crop-bottom 3 --crop-unit pct --no-footer
+# Force OCR behavior for image pages
+pdf2text-arabic -f scanned.pdf --on-empty auto
 ```
 
-## API reference
+## OCR Modes
 
-### `extract_pdf(pdf_path, **kwargs) → str`
+`on_empty` controls how image-only or mixed pages are handled.
 
-Extract text from all pages of a PDF.
+| Mode | Behavior |
+|---|---|
+| `warn` | Default. Warns/skips pages that need OCR instead of silently returning bad text. |
+| `ignore` | Keeps selectable text behavior and does not call OCR. Useful for debugging. |
+| `auto` | If a page has image-only content, sends the cropped full page to OCR. |
+| `ocr` | Forces OCR for the cropped full page. |
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `pdf_path` | `str` | — | Path to the PDF file |
-| `crop_top` | `float` | `0` | Crop from top of each page |
-| `crop_bottom` | `float` | `0` | Crop from bottom of each page |
-| `crop_unit` | `"px" \| "pct"` | `"px"` | Unit: points or percentage of page height |
-| `detect_footer` | `bool` | `True` | Auto-detect footnote separator lines and exclude content below |
-| `on_empty` | `"ignore" \| "warn" \| "auto" \| "ocr"` | `"warn"` | Handle image-only pages. `"auto"` attempts text then uses Gemini OCR for images. `"ocr"` forces full-page Gemini OCR. |
-| `table_strategy` | `str \| None` | `None` | Strategy for PyMuPDF table detection (e.g. `"lines"`, `"text"`) |
-| `gemini_model` | `str` | `"gemini-3-flash-preview"` | Google Gemini model to use when `on_empty` is `"auto"` or `"ocr"`. Requires `GEMINI_API_KEY`. |
-
-### `extract_page(page, **kwargs) → str`
-
-Extract text from a single `fitz.Page`. Same parameters as `extract_pdf` (except `pdf_path`).
-
-### `extract_pdf_result(pdf_path, **kwargs) → ExtractionResult`
-
-Structured output for AI/automation:
-
-- `text`: final extracted text
-- `pages_total`: total page count
-- `pages_with_text`: number of non-empty extracted pages
-- `empty_pages`: list of page numbers that produced empty output
-- `mixed_pages`: list of page numbers that contain extractable text AND image blocks requiring OCR
-- `warnings`: machine-readable warning tokens (example: `empty_page:3`, `mixed_page:1`)
-
-## Features
-
-### Table extraction
-
-Tables are automatically detected via PyMuPDF's `find_tables()`, extracted with proper Arabic cell ordering, and formatted as plain CSV-style text where columns are explicitly separated by a pipe character (` | `). 
-
-This format is structurally robust for LLM ingestion (RAG pipelines) because it doesn't rely on guessing headers, safely handles empty cells via consecutive pipes (` | | `), and merges split rows naturally. Merged cells are filled down so every row is self-contained:
-
-```text
-الرقم | بيان الحسابات | نفقات سنة 2023
-3.2.0.0.4.13.022 | حساب الإنخراط في الهيئات العربية والإسلامية | 137 362 000
-3.2.0.0.4.13.023 | حساب الإنخراط في المؤسسات المتعددة الاطراف | 1 688 070 000
-```
-
-**Advanced Edge-Case Handling:**
-The extraction engine features a "Targeted Cascade Fallback" designed specifically for complex, poorly-drawn official documents (e.g., Moroccan Customs Tariffs or Financial Laws):
-- **Missing Horizontal Lines:** If a table lacks row dividers (causing standard parsers to stop after the header), the engine dynamically isolates the exact width of the table and re-scans the column using text-alignment to perfectly capture the missing rows.
-- **Topless & Bottomless Tables:** If a table spans an entire page with absolutely no horizontal borders (e.g., Page 18 of the 2023 Finance Law), the engine automatically detects the vertical column lines and extracts the data without hallucinating a fake header.
-
-  <img src="assets/table_borderless.png" width="400" alt="Borderless Table Example" />
-
-- **Side-by-Side & Embedded Tables:** The fallback logic strictly adheres to physical bounding boxes. It successfully isolates independent tables floating next to each other (e.g., Page 58) or embedded inside article text (e.g., Page 24, 25) without merging them into a garbled, page-wide grid.
-
-  <img src="assets/table_side_by_side.png" width="400" alt="Side-by-Side Table Example" />
-  <img src="assets/table_nested.png" width="400" alt="Nested Table Example" />
-
-### Footer detection
-
-Automatically detects horizontal separator lines (both vector drawings and text-based dashes) in the bottom 40% of each page and excludes footnote text below them. Handles non-selectable drawn lines and selectable `------` text.
-
-### Page cropping
-
-Crop headers and page numbers by fixed pixel amount or percentage of page height.
-
-## Project structure
-
-```
-pdf2text_arabic/
-├── __init__.py    # Public API: extract_pdf, extract_page
-├── _chars.py      # Character-level ligature/overlap fixes
-├── _text.py       # RTL text building, cleaning, line merging
-├── _tables.py     # Table detection and formatting
-├── _footer.py     # Footer separator detection
-├── _extract.py    # Page/PDF extraction orchestration
-└── cli.py         # CLI entry point
-```
-
-## Integration with other projects
+OCR uses Gemini through `google-genai`. Set `GEMINI_API_KEY` in the environment or `.env` before using `auto` or `ocr`.
 
 ```bash
-pip install pdf2text-arabic
+set GEMINI_API_KEY=your_key_here
+pdf2text-arabic -f scanned.pdf --on-empty auto
 ```
 
 ```python
-from pdf2text_arabic import extract_pdf
+from pdf2text_arabic import extract_pdf, get_capabilities
 
-def extract_law_text(path: str) -> str:
-    return extract_pdf(path, crop_top=50, crop_bottom=30, detect_footer=True)
+caps = get_capabilities()
+if caps["ocr"]:
+    text = extract_pdf("scanned.pdf", on_empty="auto")
+else:
+    text = extract_pdf("scanned.pdf", on_empty="warn")
 ```
+
+## Table Output Format
+
+Tables are written as plain rows using ` | ` separators.
+
+```text
+الوزارة أو المؤسسة | عدد المناصب المالية
+وزارة الداخلية | 7.544
+إدارة الدفاع الوطني | 7.000
+وزارة الصحة والحماية الاجتماعية | 5.500
+```
+
+This is intentionally not markdown. It is a stable separator format for RAG and data pipelines:
+
+- Empty cells are visible as consecutive separators.
+- Rows stay self-contained.
+- Complex Arabic/French/numeric cells remain in text form.
+- The extractor avoids inventing headers when the PDF does not have reliable headers.
+
+## Footer Detection
+
+Footer detection uses multiple signals:
+
+- Superscript reference tips in the body.
+- Matching footer lines such as `167 - ...`.
+- Separator rules drawn as vectors or text.
+- Same-font footer backtracking when footer text starts above the first numbered line.
+
+If no real tip exists, the extractor avoids cropping based on separators alone. This protects pages where `---`, `___`, or dotted rows are part of the body or a table.
+
+## Debug Overlay
+
+Use the debug renderer to understand extraction decisions visually.
+
+```python
+import fitz
+from pdf2text_arabic.debug import get_debug_pixmap
+
+with fitz.open("document.pdf") as doc:
+    pix = get_debug_pixmap(doc[0], dpi=120, on_empty="auto")
+    pix.save("debug_page_001.png")
+```
+
+Overlay colors:
+
+| Color | Meaning |
+|---|---|
+| Blue | Detected table region. |
+| Cyan | Footer/reference area cropped from body output. |
+| Magenta | Image-only/OCR region or full-page OCR selection. |
+| Maroon | Superscript reference tip. |
+| Orange | Wide text row. |
+| Green | Right-column text row. |
+| Red | Left-column text row or heading/article block. |
+| Grey | Header/footer page crop band. |
+
+## API Reference
+
+### `extract_pdf(pdf_path, **kwargs) -> str`
+
+Extract all pages and return one text string.
+
+| Parameter | Type | Default | Description |
+|---|---|---:|---|
+| `pdf_path` | `str` | required | PDF path. |
+| `crop_top` | `float` | `8.0` | Crop amount from the top. |
+| `crop_bottom` | `float` | `4.5` | Crop amount from the bottom. |
+| `crop_unit` | `"px" | "pct"` | `"pct"` | Crop values as points or page-height percent. |
+| `auto_crop_top` | `bool` | `True` | Auto-adjust top crop for repeated headers/page numbers. |
+| `auto_crop_bottom` | `bool` | `True` | Auto-adjust bottom crop for page numbers. |
+| `detect_footer` | `bool` | `True` | Detect and remove footnote/reference footers. |
+| `on_empty` | `"ignore" | "warn" | "auto" | "ocr"` | `"warn"` | OCR/image-page handling. |
+| `table_strategy` | `str | None` | `None` | Optional PyMuPDF table strategy, e.g. `"lines"`, `"text"`. |
+| `gemini_model` | `str` | `"gemini-3-flash-preview"` | Gemini model for OCR. |
+
+### `extract_page(page, **kwargs) -> tuple[str, dict | None]`
+
+Extract one `fitz.Page`. It accepts the same extraction options except `pdf_path`.
+
+### `extract_pdf_result(pdf_path, **kwargs) -> ExtractionResult`
+
+Returns structured metadata:
+
+- `text`
+- `pages_total`
+- `pages_with_text`
+- `empty_pages`
+- `mixed_pages`
+- `warnings`
+
+### `get_capabilities() -> dict`
+
+Reports optional runtime features such as OCR availability.
+
+```python
+from pdf2text_arabic import get_capabilities
+
+print(get_capabilities())
+```
+
+## Project Structure
+
+```text
+pdf2text_arabic/
+├── __init__.py    # Public API
+├── _extract.py    # Page/PDF extraction orchestration
+├── _footer.py     # Footnote/footer detection
+├── _ocr.py        # Gemini OCR backend
+├── _tables.py     # Table detection and pipe-format output
+├── _text.py       # RTL text building and line merging
+└── debug.py       # Visual debug overlay renderer
+```
+
+## Practical Guidance
+
+- Use `extract_pdf_result()` for agents and automation.
+- Use `on_empty="warn"` when OCR is not configured.
+- Use `on_empty="auto"` when `GEMINI_API_KEY` is configured and scanned pages matter.
+- Keep `detect_footer=True` for official legal documents with numbered references.
+- Disable footer detection only if you explicitly need footnotes mixed into the body.
+- Use debug PNGs before changing extraction thresholds; many issues are layout-specific.
+
+## Development Notes
+
+The test/debug workflow used during development is intentionally visual:
+
+```bash
+python test_all_pages.py
+```
+
+This renders per-page `.txt` and debug `.png` files under `output/all_pages/` for manual review.
+
+Generated `output/` and `download/` folders are ignored by git. Curated README images live in `assets/`.

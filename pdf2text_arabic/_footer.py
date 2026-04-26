@@ -127,8 +127,8 @@ def _is_footer_separator_y(
 
 def _collect_superscript_tips(page: fitz.Page, clip: fitz.Rect, body_size: float) -> dict[str, list[float]]:
     """Find all small superscript digits and keep every Y-coordinate per number."""
-    # Look at the top 90% of the page to find tips (superscripts)
-    body_clip = fitz.Rect(clip.x0, clip.y0, clip.x1, clip.y0 + (clip.height * 0.9))
+    # Look at the top 95% of the page to find tips (superscripts)
+    body_clip = fitz.Rect(clip.x0, clip.y0, clip.x1, clip.y0 + (clip.height * 0.95))
     data = page.get_text("rawdict", clip=body_clip)
     
     tips: dict[str, list[float]] = {}

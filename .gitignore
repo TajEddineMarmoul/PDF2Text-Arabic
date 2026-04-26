@@ -14,6 +14,7 @@ output/
 download/
 # Test/Preview Images and Notebooks
 *.png
+!assets/*.png
 *.ipynb
 
 .env
