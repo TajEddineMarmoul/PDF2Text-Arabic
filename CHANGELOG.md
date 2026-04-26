@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.3.0](https://github.com/crazytajdine/PDF2Text-Arabic/compare/v0.2.0...v0.3.0) (2026-04-25)
+
+
+### Features
+
+* add debugging script for extracting tables from page 18 of the financial law PDF ([3583dda](https://github.com/crazytajdine/PDF2Text-Arabic/commit/3583ddae185c80d2c6ce8a14c8a28e26ed0ef284))
+* add script to extract tables from page 58 of the financial law PDF ([58bd66c](https://github.com/crazytajdine/PDF2Text-Arabic/commit/58bd66c9f94871ce3364e9acf6fddba0801a7841))
+* added debug for small number ([7c111bc](https://github.com/crazytajdine/PDF2Text-Arabic/commit/7c111bccb521f7890d72b25379f86ba80ce87e2e))
+* enhance table extraction and OCR region handling for improved accuracy ([1e58eb3](https://github.com/crazytajdine/PDF2Text-Arabic/commit/1e58eb31fdf95be9d392c15f23dac33ec50d28e5))
+* enhance table extraction fallback logic and add debugging scripts for strategy comparison ([cbd1793](https://github.com/crazytajdine/PDF2Text-Arabic/commit/cbd17936f972d80f4b9393009ba991b51d437c1f))
+* fix table selection ([bee6ea2](https://github.com/crazytajdine/PDF2Text-Arabic/commit/bee6ea2feeaa31d582a35f62ccd6339c47cd0eab))
+* fixed table to be more accurate ([042cc9c](https://github.com/crazytajdine/PDF2Text-Arabic/commit/042cc9c160579860c6bed63011574f8cef4cdbd7))
+* implement container discard security layer for table extraction ([79d8b9c](https://github.com/crazytajdine/PDF2Text-Arabic/commit/79d8b9cab3c302cbbb5f52beb934e854db1fb0a5))
+* implement topmost linked reference strategy for robust footnote detection ([65eb6c6](https://github.com/crazytajdine/PDF2Text-Arabic/commit/65eb6c6c661d7e8db86937cc22feeb4738a9ee24))
+* simplify RAG table formatting to plain CSV style without tags for better LLM context ([becfba3](https://github.com/crazytajdine/PDF2Text-Arabic/commit/becfba3f696fc3c0ae49a8f72c0f2ea1c5ceff19))
+* sync between debug and extract ([2173b52](https://github.com/crazytajdine/PDF2Text-Arabic/commit/2173b52d4dd0ce9cfe61ba5c4e549eaf7f774c23))
+* update table extraction format and add debugging script for specific pages ([db1ad12](https://github.com/crazytajdine/PDF2Text-Arabic/commit/db1ad12b84a99ff64bd57aff39c3c0e7ee1cfe9f))
+* use full-page OCR if any unreadable image regions are detected ([c9bbfc9](https://github.com/crazytajdine/PDF2Text-Arabic/commit/c9bbfc9dc70b65c5e48f380a5ef0dad92481ad9d))
+
+
+### Bug Fixes
+
+* bug related to footer ([d97ccde](https://github.com/crazytajdine/PDF2Text-Arabic/commit/d97ccde66c96eb64644fd665a24a6bdd6d2550ef))
+* ensure topless and bottomless tables are detected and extracted ([c01b168](https://github.com/crazytajdine/PDF2Text-Arabic/commit/c01b1684f67701f31bc301e7a75470d80ae01102))
+* ignore tiny symbols and footnote markers in image OCR extraction ([fb856b1](https://github.com/crazytajdine/PDF2Text-Arabic/commit/fb856b173cba040f6ce21c7f16cccd968818d40a))
+* test new approach for footers ([ffb0379](https://github.com/crazytajdine/PDF2Text-Arabic/commit/ffb03798c4c85eaac81f17787fa872f3728c0afa))
+
+
+### Documentation
+
+* add image assets for README ([5df661f](https://github.com/crazytajdine/PDF2Text-Arabic/commit/5df661f9bb4585c45b466989d05c219a6f4c4182))
+* add visual examples of edge-case table extraction to README ([c354c88](https://github.com/crazytajdine/PDF2Text-Arabic/commit/c354c887769c55439fd52d49fc636871885656a8))
+* update README with new CSV table format and advanced edge-case handling ([0253257](https://github.com/crazytajdine/PDF2Text-Arabic/commit/0253257d54887ce37853d384fcdeb4e5682637b5))
+
 ## [0.2.0](https://github.com/crazytajdine/PDF2Text-Arabic/compare/v0.1.6...v0.2.0) (2026-04-19)
 
 
