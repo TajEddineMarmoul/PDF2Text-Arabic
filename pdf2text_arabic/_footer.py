@@ -13,7 +13,10 @@ from __future__ import annotations
 import re
 import fitz
 
+from ._text import build_row_text, clean_arabic, merge_lines_by_y
+
 _HEADING_SIZE_MIN = 20
+_EXPERIMENTAL_FONT_BACKTRACK = True
 
 def _get_page_fonts(data: dict) -> dict[int, int]:
     """Calculate character counts for each rounded font size on the page."""
@@ -163,11 +166,6 @@ def _collect_superscript_tips(page: fitz.Page, clip: fitz.Rect, body_size: float
                             and block_dominant_size
                             and sz < block_dominant_size * 0.9
                         )
-                        or (
-                            (_has_letters(line_text) or _has_letters(block_text))
-                            and sz < body_size * 0.85
-                            and sz < 13
-                        )
                     )
                         
                     if is_tip:
@@ -302,6 +300,191 @@ def _separator_above_y(
     return max(candidates)
 
 
+def _confirmed_footer_blocks(
+    page: fitz.Page,
+    clip: fitz.Rect,
+    tips: dict[str, list[float]],
+) -> list[dict]:
+    """Return the latest confirmed footer block for each superscript number."""
+    latest_by_num: dict[str, dict] = {}
+    for block in page.get_text("blocks", clip=clip):
+        bx0, by0, bx1, by1, text = block[:5]
+        for match in re.finditer(r"^\s*(\d+)", text, flags=re.MULTILINE):
+            num = match.group(1)
+            if any(tip_y < by0 for tip_y in tips.get(num, [])):
+                previous = latest_by_num.get(num)
+                if previous is None or by0 > previous["y0"]:
+                    latest_by_num[num] = {
+                        "num": num,
+                        "bbox": fitz.Rect(bx0, by0, bx1, by1),
+                        "text": text,
+                        "y0": by0,
+                        "y1": by1,
+                    }
+                break
+    return list(latest_by_num.values())
+
+
+def _font_family(font_name: str) -> str:
+    """Normalize subset/style font names like ABCDEF+FontName,Bold."""
+    name = font_name.split("+")[-1]
+    return re.split(r"[, -](?:Bold|Italic|Oblique|Regular|Normal|Medium|Light|Black)", name, maxsplit=1, flags=re.I)[0]
+
+
+def _font_style(font_name: str) -> str:
+    name = font_name.lower()
+    is_bold = any(token in name for token in ("bold", "black", "heavy", "semibold"))
+    is_italic = any(token in name for token in ("italic", "oblique"))
+    if is_bold and is_italic:
+        return "bold-italic"
+    if is_bold:
+        return "bold"
+    if is_italic:
+        return "italic"
+    return "normal"
+
+
+def _span_font_profile(span: dict) -> tuple[str, str, float]:
+    return (
+        _font_family(span.get("font", "")),
+        _font_style(span.get("font", "")),
+        round(float(span.get("size", 0)), 1),
+    )
+
+
+def _row_y0(row: dict) -> float:
+    return min(span["bbox"][1] for span in row["spans"])
+
+
+def _row_y1(row: dict) -> float:
+    return max(span["bbox"][3] for span in row["spans"])
+
+
+def _row_text(row: dict) -> str:
+    return clean_arabic(build_row_text(row["spans"])).strip()
+
+
+def _row_font_profile(row: dict) -> tuple[str, str, float] | None:
+    font_chars: dict[tuple[str, str, float], int] = {}
+    for span in row["spans"]:
+        text = _span_text(span)
+        if not text:
+            continue
+        key = _span_font_profile(span)
+        font_chars[key] = font_chars.get(key, 0) + len(text)
+    if not font_chars:
+        return None
+    return max(font_chars.items(), key=lambda item: item[1])[0]
+
+
+def _row_font_profiles(row: dict) -> set[tuple[str, str, float]]:
+    return {
+        _span_font_profile(span)
+        for span in row["spans"]
+        if _span_text(span)
+    }
+
+
+def _row_in_table(row: dict, table_bboxes: list[fitz.Rect] | None) -> bool:
+    if not table_bboxes:
+        return False
+    y0 = _row_y0(row)
+    y1 = _row_y1(row)
+    x0 = min(span["bbox"][0] for span in row["spans"])
+    x1 = max(span["bbox"][2] for span in row["spans"])
+    cx = (x0 + x1) / 2
+    cy = (y0 + y1) / 2
+    return any(t.x0 <= cx <= t.x1 and t.y0 - 2 <= cy <= t.y1 + 2 for t in table_bboxes)
+
+
+def _font_backtrack_above_y(
+    page: fitz.Page,
+    clip: fitz.Rect,
+    y_limit: float,
+    tips: dict[str, list[float]],
+    table_bboxes: list[fitz.Rect] | None = None,
+) -> float | None:
+    """Experimental footer expansion by adjacent same-font rows.
+
+    First records font profiles used in the initially detected footer area,
+    then walks upward through nearby rows that use one of those profiles.
+    """
+    raw_data = page.get_text("rawdict", clip=clip)
+    confirmed_blocks = _confirmed_footer_blocks(page, clip, tips)
+    if not confirmed_blocks:
+        return None
+
+    rows: list[dict] = []
+    for block in raw_data.get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for row in merge_lines_by_y(block.get("lines", [])):
+            if not row.get("spans") or _row_in_table(row, table_bboxes):
+                continue
+            text = _row_text(row)
+            profile = _row_font_profile(row)
+            if not text or profile is None:
+                continue
+            rows.append({
+                "row": row,
+                "text": text,
+                "profile": profile,
+                "profiles": _row_font_profiles(row),
+                "y0": _row_y0(row),
+                "y1": _row_y1(row),
+            })
+
+    if not rows:
+        return None
+
+    rows.sort(key=lambda item: item["y0"])
+
+    start_y = min(block["y0"] for block in confirmed_blocks)
+    start_index = None
+    for i, item in enumerate(rows):
+        if item["y0"] >= start_y - 2:
+            start_index = i
+            break
+
+    if start_index is None:
+        return None
+
+    footer_profiles: set[tuple[str, str, float]] = set()
+    for item in rows[start_index:]:
+        footer_profiles.update(item["profiles"])
+
+    if not footer_profiles:
+        return None
+
+    heights = [item["y1"] - item["y0"] for item in rows if item["y1"] > item["y0"]]
+    heights.sort()
+    median_height = heights[len(heights) // 2] if heights else 7.0
+    max_gap = max(18.0, median_height * 2.5)
+
+    start = rows[start_index]
+    best_y = start["y0"]
+    current = start
+
+    for previous in reversed(rows[:start_index]):
+        gap = current["y0"] - previous["y1"]
+        if gap > max_gap:
+            break
+        if not (previous["profiles"] & footer_profiles):
+            break
+        best_y = previous["y0"]
+        current = previous
+
+    # This helper is only allowed to expand the footer upward.  If the row-level
+    # start is below the block-level smart marker, keep the original smart cut.
+    if best_y >= y_limit - 1:
+        return None
+
+    separator_y = _separator_above_y(page, clip, start["y0"], table_bboxes=table_bboxes)
+    if separator_y is not None and 0 <= best_y - separator_y <= 20:
+        return separator_y
+    return best_y
+
+
 def _detect_footer_by_smart_markers(page, clip: fitz.Rect, tips: dict[str, list[float]]) -> float | None:
     """Strategy 3: Topmost Linked Reference.
     
@@ -311,23 +494,12 @@ def _detect_footer_by_smart_markers(page, clip: fitz.Rect, tips: dict[str, list[
     """
     if not tips:
         return None
-        
-    blocks = page.get_text("blocks", clip=clip)
-    latest_match_by_num: dict[str, float] = {}
-    
-    for b in blocks:
-        bx0, by0, bx1, by1, text = b[:5]
-        for match in re.finditer(r"^\s*(\d+)", text, flags=re.MULTILINE):
-            num = match.group(1)
-            # Match per marker number. A reference line is valid if any same-number
-            # tip exists above it; keep the latest candidate for that number.
-            if any(tip_y < by0 for tip_y in tips.get(num, [])):
-                latest_match_by_num[num] = max(by0, latest_match_by_num.get(num, by0))
 
-    if latest_match_by_num:
+    confirmed_blocks = _confirmed_footer_blocks(page, clip, tips)
+    if confirmed_blocks:
         # After choosing the latest reference for each number, return the topmost
         # reference among all matched numbers as the footer start candidate.
-        return min(latest_match_by_num.values())
+        return min(block["y0"] for block in confirmed_blocks)
         
     return None
 
@@ -412,6 +584,19 @@ def detect_footer_y(
     y = _detect_footer_by_smart_markers(page, clip, tips_map)
     if y is not None:
         separator_y = _separator_above_y(page, clip, y, table_bboxes=table_bboxes)
+        if _EXPERIMENTAL_FONT_BACKTRACK:
+            font_y = _font_backtrack_above_y(
+                page,
+                clip,
+                y,
+                tips_map,
+                table_bboxes=table_bboxes,
+            )
+            if font_y is not None:
+                if separator_y is not None:
+                    return min(separator_y, font_y), True
+                return font_y, True
+
         if separator_y is not None:
             return separator_y, True
         return y, True
