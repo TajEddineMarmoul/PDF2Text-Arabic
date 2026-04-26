@@ -355,6 +355,13 @@ def extract_tables(
                 if merged[ri][ci] and ci < len(grid[ri - 1]) and grid[ri - 1][ci]:
                     grid[ri][ci] = grid[ri - 1][ci]
 
+        # COLLAPSE: Remove columns that are empty across ALL rows (false columns)
+        if grid:
+            num_cols = len(grid[0])
+            active_cols = [ci for ci in range(num_cols) if any(row[ci].strip() for row in grid)]
+            if len(active_cols) < num_cols:
+                grid = [[row[ci] for ci in active_cols] for row in grid]
+
         _format_rag_table(grid, table.bbox[1], results)
 
     # Keep the legacy return shape without carrying headers across pages.
