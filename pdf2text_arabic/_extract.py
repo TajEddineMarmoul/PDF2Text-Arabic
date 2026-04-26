@@ -715,10 +715,25 @@ def extract_page(
     tabs = page.find_tables(**kwargs)
     table_bboxes = [fitz.Rect(t.bbox) for t in tabs.tables]
 
-    # 2. FOOTER DETECTION
+    # Keep the geometric crop separate from footer cropping. Full-page OCR
+    # should use only crop_top/crop_bottom/auto-crop, never footer detection.
+    original_clip = fitz.Rect(clip)
+
+    # 2. CONTENT DETECTION
+    is_empty_selectable = _is_empty_page(page, original_clip)
+    mixed_regions = _image_only_regions(page, original_clip)
+
+    # USER REQUEST: If the page has ANY part that needs OCR (mixed_regions),
+    # or if the page is completely empty, we upgrade the entire page to full OCR.
+    # This prevents messy merging of PyMuPDF text and Gemini text.
+    effective_mode = on_empty
+    if on_empty == "auto" and (is_empty_selectable or mixed_regions):
+        effective_mode = "ocr"
+
+    # 3. FOOTER DETECTION
     footer_y = None
 
-    if detect_footer:
+    if detect_footer and effective_mode != "ocr":
         footer_y, _ = detect_footer_y(page, clip, table_bboxes=table_bboxes)
         if footer_y is not None:
             apply_crop = True
@@ -729,17 +744,6 @@ def extract_page(
             if apply_crop:
                 # Shrink clip to exclude footer/reference text from extraction.
                 clip = fitz.Rect(clip.x0, clip.y0, clip.x1, footer_y - 1)
-
-    # 3. CONTENT DETECTION
-    is_empty_selectable = _is_empty_page(page, clip)
-    mixed_regions = _image_only_regions(page, clip)
-
-    # USER REQUEST: If the page has ANY part that needs OCR (mixed_regions),
-    # or if the page is completely empty, we upgrade the entire page to full OCR.
-    # This prevents messy merging of PyMuPDF text and Gemini text.
-    effective_mode = on_empty
-    if on_empty == "auto" and (is_empty_selectable or mixed_regions):
-        effective_mode = "ocr"
 
     pieces: list[tuple[float, float, float, float, str]] = []
     last_table_state = None
@@ -793,9 +797,9 @@ def extract_page(
 
     # 5. OCR EXTRACTION
     if effective_mode == "ocr":
-        ocr_results = run_ocr(page, [clip], model=gemini_model)
+        ocr_results = run_ocr(page, [original_clip], model=gemini_model)
         for y_top, ocr_text in ocr_results:
-            pieces.append((y_top, clip.y1, clip.x0, clip.x1, ocr_text))
+            pieces.append((original_clip.y0, original_clip.y1, original_clip.x0, original_clip.x1, ocr_text))
 
     # 6. FINAL RECONSTRUCTION
     if not pieces:

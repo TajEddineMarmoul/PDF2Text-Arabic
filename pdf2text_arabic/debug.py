@@ -44,6 +44,7 @@ def get_debug_pixmap(
     w, h = page.rect.width, page.rect.height
     clip = _compute_clip(page, crop_top, crop_bottom, crop_unit, auto_crop_top, auto_crop_bottom)
     mid_x = w / 2
+    original_clip = fitz.Rect(clip)
 
     # Shade cropped header/footer bands (Grey)
     if clip.y0 > page.rect.y0:
@@ -56,11 +57,15 @@ def get_debug_pixmap(
     # 2. DETECTION
     _, table_bbox_tuples, _ = extract_tables(page, clip=clip)
     table_bboxes = [fitz.Rect(t) for t in table_bbox_tuples]
-    ocr_regions = _image_only_regions(page, clip)
-    is_empty_selectable = _is_empty_page(page, clip)
+    ocr_regions = _image_only_regions(page, original_clip)
+    is_empty_selectable = _is_empty_page(page, original_clip)
+
+    full_page_ocr = on_empty == "ocr" or (
+        on_empty == "auto" and (is_empty_selectable or bool(ocr_regions))
+    )
 
     # Shaded Footer (Cyan)
-    if detect_footer:
+    if detect_footer and not full_page_ocr:
         footer_y, _ = detect_footer_y(page, clip, table_bboxes=table_bboxes)
         if footer_y is not None:
             apply_crop = True
@@ -116,9 +121,6 @@ def get_debug_pixmap(
 
     final_order = order_reading_rtl(all_items, clip, bbox=lambda x: x["bbox"])
 
-    full_page_ocr = on_empty == "ocr" or (
-        on_empty == "auto" and (is_empty_selectable or bool(ocr_regions))
-    )
     trigger_index = None
     if full_page_ocr and on_empty == "auto":
         for idx, item in enumerate(final_order):
@@ -133,9 +135,9 @@ def get_debug_pixmap(
     BG_H = 8
 
     draw_order = final_order
-    if trigger_index is not None:
-        draw_order = final_order[: trigger_index + 1]
-    elif full_page_ocr:
+    if full_page_ocr:
+        # Full-page OCR discards PyMuPDF text/table boxes, so showing them
+        # would make the debug image look like those boxes were used.
         draw_order = []
 
     for i, it in enumerate(draw_order):
@@ -165,7 +167,7 @@ def get_debug_pixmap(
 
     if full_page_ocr:
         page.draw_rect(
-            clip,
+            original_clip,
             color=(1, 0, 1),
             fill=(1, 0, 1),
             fill_opacity=0.08,
@@ -176,14 +178,14 @@ def get_debug_pixmap(
             trigger_box = trigger["bbox"]
             page.draw_rect(trigger_box, color=(1, 0, 0), width=3)
             label = "FULL PAGE OCR - triggered here"
-            label_y = max(clip.y0 + 14, trigger_box.y0 - 10)
+            label_y = max(original_clip.y0 + 14, trigger_box.y0 - 10)
         elif on_empty == "ocr":
             label = "FULL PAGE OCR - forced"
-            label_y = clip.y0 + 14
+            label_y = original_clip.y0 + 14
         else:
             label = "FULL PAGE OCR - empty/selectable text missing"
-            label_y = clip.y0 + 14
-        label_box = fitz.Rect(clip.x0 + 8, label_y - 12, clip.x0 + 210, label_y + 4)
+            label_y = original_clip.y0 + 14
+        label_box = fitz.Rect(original_clip.x0 + 8, label_y - 12, original_clip.x0 + 210, label_y + 4)
         page.draw_rect(label_box, color=(1, 1, 1), fill=(1, 1, 1))
         page.insert_text((label_box.x0 + 3, label_y), label, color=(1, 0, 0), fontsize=8, fontname="helv")
 
