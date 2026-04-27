@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.0](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/compare/v0.4.0...v0.5.0) (2026-04-26)
+
+
+### Features
+
+* add MIT License to the repository ([80e95dc](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/commit/80e95dca617305e592152499831a53e88d44f4d7))
+* enhance table extraction and add sample page tests ([56d1ac2](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/commit/56d1ac2f45f87ce090c9a142c8b03ec56726cf66))
+
+
+### Bug Fixes
+
+* resolve OCR footer hallucination and refine debug overlays ([e6567f7](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/commit/e6567f7866ad62e5d17246475188a7c5c6a8e9db))
+
 ## [0.4.0](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/compare/v0.3.0...v0.4.0) (2026-04-26)
 
 
@@ -77,4 +90,3 @@
 * update extraction logic to ignore repeating headers and standalone page numbers ([23c3378](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/commit/23c3378efa5ff00bce066867765bde01c3e60dcb))
 * update google-genai version to 1.73.1 and clean up settings ([e4587f9](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/commit/e4587f9a8145b70c5d4c32555c54a5a71269a318))
 * update settings and improve table extraction logic to filter out false positives ([b09e6ae](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/commit/b09e6ae92e7f88eee5230ab5bbc037b2f575c9f9))
-
