@@ -29,7 +29,6 @@ _LATIN_WORD_RE = re.compile(r"\b[A-Za-z]{4,}\b")
 _MIRRORED_PARENS_RE = re.compile(r"\)\s*([^()\n]{1,30}?)\s*\(")
 _SWAPPED_GUILLEMETS_RE = re.compile(r"»\s*([^«»\n]{1,120}?)\s*«")
 _DCI_VARIANTS_RE = re.compile(r"(?<!\S)(?:م\s+د\s+ت|ت\s+د\s+م)(?!\S)")
-_DUPLICATE_ARABIC_LINE_RE = re.compile(r"(?m)^[ \t]*([ء-ي]{2,})(?:[ \t]+\1)+[ \t]*$")
 _JOINED_DEMO_ARTICLE_RE = re.compile(
     r"\b((?:هذا|هذه|ذلك|تلك|لهذا|لهذه|بهذا|بهذه|وفيهذا|وفيهذه))(?:ال|لا)([ء-ي]{2,})\b"
 )
@@ -40,70 +39,34 @@ _JOINED_SHORT_PRONOUN_ARTICLE_RE = re.compile(
     r"\b((?:(?:في|ب|ل|من|عن|على|إلى)?(?:ها|هم|هن|ه|ك|ي|نا|هما)))(?:ال|لا)([ء-ي]{2,})\b"
 )
 _OCR_WORD_FIXES = {
-    "إعالم": "إعلام",
-    "الإعالم": "الإعلام",
-    "والإعالم": "والإعلام",
-    "بإعالم": "بإعلام",
-    "بالإعالم": "بالإعلام",
     "والتصال": "والاتصال",
     "لألشخاص": "للأشخاص",
-    "واستغاللها": "واستغلالها",
-    "استهالك": "استهلاك",
-    "الاستهالك": "الاستهلاك",
     "الالزمة": "اللازمة",
     "الامسلحة": "المسلحة",
     "الاعسكري": "العسكري",
     "الاوطنية": "الوطنية",
     "وكذالاتزاماتهم": "وكذا التزاماتهم",
     "الامتخذة": "المتخذة",
-    "مقاوالت": "مقاولات",
-    "ومقاوالت": "ومقاولات",
-    "بمقاوالت": "بمقاولات",
-    "المقاوالت": "المقاولات",
-    "والمقاوالت": "والمقاولات",
-    "مالئمة": "ملائمة",
-    "ومالئمة": "وملائمة",
-    "المالئمة": "الملائمة",
     "صالبة": "صلبة",
     "إلعادة": "لإعادة",
     "والمالقات": "والملحقات",
     "والتهييئات": "والتهيئات",
-    "مالءمة": "ملاءمة",
-    "ومالءمة": "وملاءمة",
+    "مالم": "ما لم",
+    "اجراءات": "إجراءات",
+    "الاجراءات": "الإجراءات",
+    "والاجراءات": "والإجراءات",
+    "تبادلهالا": "تبادلها لا",
+    "إال": "إلا",
+    "إلذن": "لإذن",
+    "الضر ائب": "الضرائب",
+    "الصادر ات": "الصادرات",
+    "الشر يف": "الشريف",
+    "بتار يخ": "بتاريخ",
+    "وألي": "ولأي",
+    "وفقاألحكام": "وفقا لأحكام",
+    "الستهلاك": "الاستهلاك",
+    "بمقتغضى": "بمقتضى",
 }
-
-_OCR_WORD_FIXES.update(
-    {
-        "استغالل": "استغلال",
-        "واستغالل": "واستغلال",
-        "مبادالت": "مبادلات",
-        "والمبادالت": "والمبادلات",
-        "تسهيالت": "تسهيلات",
-        "التسهيالت": "التسهيلات",
-        "القتراح": "لاقتراح",
-        "إدالء": "إدلاء",
-        "الإدالء": "الإدلاء",
-        "إخالال": "إخلالا",
-        "اجراءات": "إجراءات",
-        "الاجراءات": "الإجراءات",
-        "والاجراءات": "والإجراءات",
-        "هؤالء": "هؤلاء",
-        "تبادلهالا": "تبادلها لا",
-        "إال": "إلا",
-        "إلذن": "لإذن",
-        "المجاالت": "المجالات",
-        "مجاالت": "مجالات",
-        "والهيأت": "والهيئات",
-        "الهيأت": "الهيئات",
-        "مالم": "ما لم",
-        "حاصال": "حاصلا",
-        "الحاصالت": "الحاصلات",
-        "خالل": "خلال",
-        "وخالل": "وخلال",
-        "الإخالل": "الإخلال",
-        "لإلخالل": "للإخلال",
-    }
-)
 
 # Arabic letters that do NOT join to the next letter
 _NON_JOINING_FORWARD = set("اأإآدذرزوؤةىء\u0671")
@@ -181,20 +144,46 @@ def clean_arabic(text: str) -> str:
 
 
 def _repair_lam_alef_ocr_swaps(text: str) -> str:
-    """Repair recurring OCR swaps where ``لا`` is emitted as ``ال``."""
-    text = _DUPLICATE_ARABIC_LINE_RE.sub(r"\1", text)
+    """Repair recurring OCR swaps where ``لا`` is emitted as ``ال``.
+    
+    Generic rule: Arabic words ending in broken 'الت', 'الء' 
+    become 'لات', 'لاء' when safe (length >= 5).
+    """
     text = re.sub(r"(?<![ء-ي])لاليفاء(?![ء-ي])", "للإيفاء", text)
     text = re.sub(r"(?<![ء-ي])لالتفاقية(?![ء-ي])", "للاتفاقية", text)
-    text = re.sub(r"(?<![ء-ي])المتحانات(?=\s+الحصول)", "لامتحانات", text)
-    text = re.sub(r"(?<![ء-ي])اختالف([ء-ي]*)(?![ء-ي])", r"اختلاف\1", text)
+    text = re.sub(r"(?<![ء-ي])المتحانات(?=\s+الحصول)", "امتحانات", text)
     text = text.replace("عالوة", "علاوة")
 
     def repair_token(match: re.Match[str]) -> str:
         token = match.group(0)
-        if token.endswith("الت"):
-            prefix = token[:-3]
-            if len(prefix) >= 2 or prefix == "آ":
-                return f"{prefix}لات"
+        
+        # Specific prefix replacement for common Alef-Meem-Lam OCR inversion (امل -> الم)
+        if len(token) >= 4:
+            token = re.sub(r"^([وفبك]?)امل(?=[ء-ي])", r"\1الم", token)
+
+        # Targeted generalized end-of-word repairs (plurals, etc.)
+        # Minimum length 5 protects common words like قالت.
+        if len(token) >= 5 or token.startswith("آ"):
+            for bad, good in [
+                ("الت", "لات"), ("الء", "لاء")
+            ]:
+                if token.endswith(bad):
+                    return token[:-len(bad)] + good
+        
+        # Middle of word: specific recurring patterns
+        if "استغالل" in token:
+            token = token.replace("استغالل", "استغلال")
+        if "إصالح" in token:
+            token = token.replace("إصالح", "إصلاح")
+        if "المتحانات" in token:
+            token = token.replace("المتحانات", "امتحانات")
+        if "الهيأت" in token:
+            token = token.replace("الهيأت", "الهيئات")
+        if "القتراح" in token:
+            token = token.replace("القتراح", "لاقتراح")
+        if "إخالال" in token:
+            token = token.replace("إخالال", "إخلالا")
+
         return token
 
     return _ARABIC_WORD_RE.sub(repair_token, text)
@@ -280,19 +269,25 @@ def _repair_mirrored_parentheses(match: re.Match[str]) -> str:
 
 
 def _apply_ocr_word_fixes(text: str) -> str:
-    text = re.sub(r"(?<![ء-ي])إصالح([ء-ي]*)(?![ء-ي])", r"إصلاح\1", text)
-    text = text.replace("إدالء", "إدلاء")
-    text = text.replace("حاصال", "حاصلا")
+    """Apply specific word-level OCR corrections as a fallback."""
+    # Contextual repairs for common artifacts
     text = text.replace("خالل", "خلال")
+    text = text.replace("مالئمة", "ملائمة")
+    text = text.replace("مالءمة", "ملاءمة")
+    text = text.replace("حاصال", "حاصلا")
     text = text.replace("إخالل", "إخلال")
     text = text.replace("لإلخلال", "للإخلال")
+    text = text.replace("إعالم", "إعلام")
+    text = text.replace("اختالف", "اختلاف")
+    text = text.replace("استهالك", "استهلاك")
+    
     text = re.sub(r"(?<![ء-ي])لأل([ء-ي]+)(?![ء-ي])", r"للأ\1", text)
+    
     for bad, good in _OCR_WORD_FIXES.items():
-        text = re.sub(
-            rf"(?<![ء-ي]){re.escape(bad)}(?![ء-ي])",
-            good,
-            text,
-        )
+        # Handle simple replacements to catch words even with prefixes
+        text = text.replace(bad, good)
+    
+    # Standalone 'ال' is almost always 'لا' (no) interpreted incorrectly
     text = re.sub(r"(?<![ء-ي])ال(?![ء-ي])", "لا", text)
     return text
 
