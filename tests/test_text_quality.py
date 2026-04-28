@@ -112,6 +112,36 @@ class ArabicTextQualityTests(unittest.TestCase):
     def test_clean_arabic_keeps_taormina_place_name(self):
         self.assertEqual(clean_arabic("بتاورمينا"), "بتاورمينا")
 
+    def test_clean_arabic_repairs_remaining_user_examples(self):
+        fixed = clean_arabic(
+            "واستغالل الطاقات والمبادالت التجارية التسهيالت للموظفين "
+            "القتراح تسوية بعد الإدالء بجواز إخالال جسيما الاجراءات المطبقة "
+            "هؤالء الموظفون تبادلهالا يتم استعمالها إال لألغراض "
+            "إلذن مكتوب مسبق، إال إذا نصت"
+        )
+
+        self.assertIn("واستغلال الطاقات", fixed)
+        self.assertIn("والمبادلات التجارية", fixed)
+        self.assertIn("التسهيلات للموظفين", fixed)
+        self.assertIn("لاقتراح تسوية", fixed)
+        self.assertIn("بعد الإدلاء بجواز", fixed)
+        self.assertIn("إخلالا جسيما", fixed)
+        self.assertIn("الإجراءات المطبقة", fixed)
+        self.assertIn("هؤلاء الموظفون", fixed)
+        self.assertIn("تبادلها لا يتم استعمالها", fixed)
+        self.assertIn("إلا للأغراض", fixed)
+        self.assertIn("لإذن مكتوب مسبق، إلا إذا نصت", fixed)
+        self.assertEqual(
+            clean_arabic("والإدالء بتقرير تقني وبالإدالء بالإقرار"),
+            "والإدلاء بتقرير تقني وبالإدلاء بالإقرار",
+        )
+
+    def test_clean_arabic_repairs_standalone_negation_lam_alef(self):
+        self.assertEqual(
+            clean_arabic("ال يمكن أن تستعمل في شروط أمنية ال تقل"),
+            "لا يمكن أن تستعمل في شروط أمنية لا تقل",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

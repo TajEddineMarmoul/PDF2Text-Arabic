@@ -70,6 +70,28 @@ _OCR_WORD_FIXES = {
     "ومالءمة": "وملاءمة",
 }
 
+_OCR_WORD_FIXES.update(
+    {
+        "استغالل": "استغلال",
+        "واستغالل": "واستغلال",
+        "مبادالت": "مبادلات",
+        "والمبادالت": "والمبادلات",
+        "تسهيالت": "تسهيلات",
+        "التسهيالت": "التسهيلات",
+        "القتراح": "لاقتراح",
+        "إدالء": "إدلاء",
+        "الإدالء": "الإدلاء",
+        "إخالال": "إخلالا",
+        "اجراءات": "إجراءات",
+        "الاجراءات": "الإجراءات",
+        "والاجراءات": "والإجراءات",
+        "هؤالء": "هؤلاء",
+        "تبادلهالا": "تبادلها لا",
+        "إال": "إلا",
+        "إلذن": "لإذن",
+    }
+)
+
 # Arabic letters that do NOT join to the next letter
 _NON_JOINING_FORWARD = set("اأإآدذرزوؤةىء\u0671")
 _UNLIKELY_ARABIC_START = set("ةى")
@@ -116,8 +138,9 @@ def clean_arabic(text: str) -> str:
     
     # GLOBAL LIGATURE CORRECTOR: Fix common 'Lam-Alef' decomposition artifacts
     # Handles cases like 'اإل' -> 'الإ', 'اال' -> 'الا', and 'ا ا ل' (space jitter)
-    # Pattern: Alef + optional space + Alef variant + optional space + Lam
-    text = re.sub(r"ا\s*([\u0622\u0623\u0625\u0627])\s*ل", r"ال\1", text)
+    # Pattern: Alef + optional space + Alef variant + optional space + Lam.
+    # Restrict to token starts so "جسيما الاجراءات" is not merged into one word.
+    text = re.sub(r"(?<![ء-ي])ا\s*([\u0622\u0623\u0625\u0627])\s*ل", r"ال\1", text)
     
     text = unicodedata.normalize("NFKC", text)
     text = _ZW_RE.sub("", text)
@@ -219,12 +242,15 @@ def _repair_mirrored_parentheses(match: re.Match[str]) -> str:
 
 def _apply_ocr_word_fixes(text: str) -> str:
     text = re.sub(r"(?<![ء-ي])إصالح([ء-ي]*)(?![ء-ي])", r"إصلاح\1", text)
+    text = text.replace("إدالء", "إدلاء")
+    text = re.sub(r"(?<![ء-ي])لأل([ء-ي]+)(?![ء-ي])", r"للأ\1", text)
     for bad, good in _OCR_WORD_FIXES.items():
         text = re.sub(
             rf"(?<![ء-ي]){re.escape(bad)}(?![ء-ي])",
             good,
             text,
         )
+    text = re.sub(r"(?<![ء-ي])ال(?![ء-ي])", "لا", text)
     return text
 
 def merge_lines_by_y(lines: list[dict]) -> list[dict]:
