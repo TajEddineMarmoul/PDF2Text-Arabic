@@ -19,13 +19,95 @@ _ARABIC_DIGIT_RE = re.compile(r"([\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF])(\d)"
 _DIGIT_ARABIC_RE = re.compile(r"(\d)([\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF])")
 _SPACES_RE = re.compile(r"[ \t]+")
 _NEWLINES_RE = re.compile(r"\n{3,}")
+_ARABIC_TOKEN_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]{2,}")
+_ARABIC_RUN_RE = re.compile(
+    r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]+"
+    r"(?:\s+[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]+)+"
+)
+_LATIN_WORD_RE = re.compile(r"\b[A-Za-z]{4,}\b")
+_MIRRORED_PARENS_RE = re.compile(r"\)\s*([^()\n]{1,30}?)\s*\(")
+_SWAPPED_GUILLEMETS_RE = re.compile(r"»\s*([^«»\n]{1,120}?)\s*«")
+_DCI_VARIANTS_RE = re.compile(r"(?<!\S)(?:م\s+د\s+ت|ت\s+د\s+م)(?!\S)")
+_JOINED_DEMO_ARTICLE_RE = re.compile(
+    r"\b((?:هذا|هذه|ذلك|تلك|لهذا|لهذه|بهذا|بهذه|وفيهذا|وفيهذه))(?:ال|لا)([ء-ي]{2,})\b"
+)
+_JOINED_PRONOUN_ARTICLE_RE = re.compile(
+    r"\b([ء-ي]{3,}(?:ها|هم|هن|ه|ك|ي|نا|هما))(?:ال|لا)([ء-ي]{2,})\b"
+)
+_JOINED_SHORT_PRONOUN_ARTICLE_RE = re.compile(
+    r"\b((?:(?:في|ب|ل|من|عن|على|إلى)?(?:ها|هم|هن|ه|ك|ي|نا|هما)))(?:ال|لا)([ء-ي]{2,})\b"
+)
+_OCR_WORD_FIXES = {
+    "إعالم": "إعلام",
+    "الإعالم": "الإعلام",
+    "والإعالم": "والإعلام",
+    "بإعالم": "بإعلام",
+    "بالإعالم": "بالإعلام",
+    "والتصال": "والاتصال",
+    "لألشخاص": "للأشخاص",
+    "واستغاللها": "واستغلالها",
+    "استهالك": "استهلاك",
+    "الاستهالك": "الاستهلاك",
+    "الالزمة": "اللازمة",
+    "الامسلحة": "المسلحة",
+    "الاعسكري": "العسكري",
+    "الاوطنية": "الوطنية",
+    "وكذالاتزاماتهم": "وكذا التزاماتهم",
+    "الامتخذة": "المتخذة",
+    "مقاوالت": "مقاولات",
+    "ومقاوالت": "ومقاولات",
+    "بمقاوالت": "بمقاولات",
+    "المقاوالت": "المقاولات",
+    "والمقاوالت": "والمقاولات",
+    "مالئمة": "ملائمة",
+    "ومالئمة": "وملائمة",
+    "المالئمة": "الملائمة",
+    "صالبة": "صلبة",
+    "إلعادة": "لإعادة",
+    "والمالقات": "والملحقات",
+    "والتهييئات": "والتهيئات",
+    "مالءمة": "ملاءمة",
+    "ومالءمة": "وملاءمة",
+}
 
 # Arabic letters that do NOT join to the next letter
 _NON_JOINING_FORWARD = set("اأإآدذرزوؤةىء\u0671")
+_UNLIKELY_ARABIC_START = set("ةى")
+_STRIP_ARABIC_TOKEN = "\"'`~!@#$%^&*()-_=+[{]}\\|;:,<.>/?؟؛،«»“”\n\r\t "
 
 # ---------------------------------------------------------------------------
 # Public functions
 # ---------------------------------------------------------------------------
+
+def looks_like_scrambled_arabic(text: str) -> bool:
+    """Return True when selectable Arabic is likely stored backwards.
+
+    The strongest signal is reversed definite-article words: normal Arabic
+    commonly starts words with ``ال``; scrambled extraction often turns that
+    into a word ending in ``لا``.
+    """
+    long_tokens = _arabic_long_tokens(text)
+    if not long_tokens:
+        return False
+
+    start_al = sum(1 for t in long_tokens if t.startswith("ال"))
+    end_la = sum(1 for t in long_tokens if t.endswith("لا"))
+    unlikely = sum(1 for t in long_tokens if t[0] in _UNLIKELY_ARABIC_START)
+    count = len(long_tokens)
+
+    start_al_ratio = start_al / count
+    end_la_ratio = end_la / count
+    unlikely_ratio = unlikely / count
+
+    if count >= 15 and end_la_ratio >= 0.25 and start_al_ratio <= 0.05:
+        return True
+    if count >= 10 and unlikely_ratio >= 0.15:
+        return True
+    if count >= 20 and unlikely_ratio >= 0.10:
+        return True
+
+    return _has_scrambled_arabic_line(text)
+
 
 def clean_arabic(text: str) -> str:
     """Post-process extracted text: normalize, strip invisibles, fix spacing."""
@@ -40,10 +122,109 @@ def clean_arabic(text: str) -> str:
     text = unicodedata.normalize("NFKC", text)
     text = _ZW_RE.sub("", text)
     text = text.replace("\u0640", "")
+    text = _repair_reversed_latin_words(text)
+    text = _MIRRORED_PARENS_RE.sub(_repair_mirrored_parentheses, text)
+    text = _SWAPPED_GUILLEMETS_RE.sub(r"«\1»", text)
+    text = _repair_scrambled_arabic_runs(text)
+    text = _JOINED_DEMO_ARTICLE_RE.sub(r"\1 ال\2", text)
+    text = _JOINED_SHORT_PRONOUN_ARTICLE_RE.sub(r"\1 ال\2", text)
+    text = _JOINED_PRONOUN_ARTICLE_RE.sub(r"\1 ال\2", text)
+    text = _apply_ocr_word_fixes(text)
     text = _ARABIC_DIGIT_RE.sub(r"\1 \2", text)
     text = _DIGIT_ARABIC_RE.sub(r"\1 \2", text)
     text = _SPACES_RE.sub(" ", text)
+    text = _DCI_VARIANTS_RE.sub("م-د-ت", text)
     text = _NEWLINES_RE.sub("\n\n", text)
+    return text
+
+
+def _arabic_long_tokens(text: str) -> list[str]:
+    tokens: list[str] = []
+    for token in _ARABIC_TOKEN_RE.findall(text):
+        token = token.strip(_STRIP_ARABIC_TOKEN)
+        if len(token) < 4:
+            continue
+        letters = sum(1 for ch in token if is_arabic(ch))
+        if letters >= max(2, int(0.6 * len(token))):
+            tokens.append(token)
+    return tokens
+
+
+def _has_scrambled_arabic_line(text: str) -> bool:
+    for line in text.splitlines():
+        tokens = _arabic_long_tokens(line)
+        if len(tokens) < 3:
+            continue
+        bad = [t for t in tokens if t[0] in _UNLIKELY_ARABIC_START]
+        has_latin = any(ch.isalpha() and not is_arabic(ch) for ch in line)
+        if len(bad) >= 3:
+            return True
+        if has_latin and len(bad) >= 2:
+            return True
+    return False
+
+
+def _is_scrambled_arabic_run(text: str) -> bool:
+    tokens = [
+        token.strip(_STRIP_ARABIC_TOKEN)
+        for token in _ARABIC_TOKEN_RE.findall(text)
+        if len(token.strip(_STRIP_ARABIC_TOKEN)) >= 3
+    ]
+    if len(tokens) < 2:
+        return False
+
+    count = len(tokens)
+    start_al = sum(1 for t in tokens if t.startswith("ال")) / count
+    end_la = sum(1 for t in tokens if t.endswith("لا")) / count
+    unlikely = sum(1 for t in tokens if t[0] in _UNLIKELY_ARABIC_START) / count
+
+    if count == 2:
+        return end_la >= 0.50 and start_al == 0.0
+
+    return (end_la >= 0.25 and start_al <= 0.10) or unlikely >= 0.60
+
+
+def _repair_scrambled_arabic_runs(text: str) -> str:
+    def repl(match: re.Match[str]) -> str:
+        run = match.group(0)
+        if not _is_scrambled_arabic_run(run):
+            return run
+        tokens = run.split()
+        return " ".join(token[::-1] for token in reversed(tokens))
+
+    return _ARABIC_RUN_RE.sub(repl, text)
+
+
+def _repair_reversed_latin_words(text: str) -> str:
+    def repl(match: re.Match[str]) -> str:
+        token = match.group(0)
+        candidate = token[::-1]
+        if (
+            candidate[0].isupper()
+            and candidate[1:].islower()
+            and (token[-1].isupper() or token[0].islower())
+        ):
+            return candidate
+        return token
+
+    return _LATIN_WORD_RE.sub(repl, text)
+
+
+def _repair_mirrored_parentheses(match: re.Match[str]) -> str:
+    content = match.group(1).strip()
+    if content == "ICD":
+        content = "DCI"
+    return f"({content})"
+
+
+def _apply_ocr_word_fixes(text: str) -> str:
+    text = re.sub(r"(?<![ء-ي])إصالح([ء-ي]*)(?![ء-ي])", r"إصلاح\1", text)
+    for bad, good in _OCR_WORD_FIXES.items():
+        text = re.sub(
+            rf"(?<![ء-ي]){re.escape(bad)}(?![ء-ي])",
+            good,
+            text,
+        )
     return text
 
 def merge_lines_by_y(lines: list[dict]) -> list[dict]:

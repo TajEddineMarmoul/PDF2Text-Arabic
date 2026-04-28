@@ -24,6 +24,7 @@ from ._extract import (
     order_reading_rtl,
 )
 from ._tables import extract_tables
+from ._text import looks_like_scrambled_arabic
 
 
 def get_debug_pixmap(
@@ -59,9 +60,13 @@ def get_debug_pixmap(
     table_bboxes = [fitz.Rect(t) for t in table_bbox_tuples]
     ocr_regions = _image_only_regions(page, original_clip)
     is_empty_selectable = _is_empty_page(page, original_clip)
+    is_scrambled_selectable = looks_like_scrambled_arabic(
+        page.get_text("text", clip=original_clip)
+    )
 
     full_page_ocr = on_empty == "ocr" or (
-        on_empty == "auto" and (is_empty_selectable or bool(ocr_regions))
+        on_empty == "auto"
+        and (is_empty_selectable or is_scrambled_selectable or bool(ocr_regions))
     )
 
     # Shaded Footer (Cyan)
@@ -127,7 +132,7 @@ def get_debug_pixmap(
             if item["type"] == "IMAGE":
                 trigger_index = idx
                 break
-        if trigger_index is None and is_empty_selectable:
+        if trigger_index is None and (is_empty_selectable or is_scrambled_selectable):
             trigger_index = 0
 
     # 4. DRAWING
@@ -177,10 +182,17 @@ def get_debug_pixmap(
             trigger = final_order[trigger_index]
             trigger_box = trigger["bbox"]
             page.draw_rect(trigger_box, color=(1, 0, 0), width=3)
-            label = "FULL PAGE OCR - triggered here"
+            label = (
+                "FULL PAGE OCR - scrambled text layer"
+                if is_scrambled_selectable
+                else "FULL PAGE OCR - triggered here"
+            )
             label_y = max(original_clip.y0 + 14, trigger_box.y0 - 10)
         elif on_empty == "ocr":
             label = "FULL PAGE OCR - forced"
+            label_y = original_clip.y0 + 14
+        elif is_scrambled_selectable:
+            label = "FULL PAGE OCR - scrambled text layer"
             label_y = original_clip.y0 + 14
         else:
             label = "FULL PAGE OCR - empty/selectable text missing"

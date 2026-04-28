@@ -18,7 +18,12 @@ from ._ocr import (
     run_ocr,
 )
 from ._tables import extract_tables
-from ._text import build_row_text, clean_arabic, merge_lines_by_y
+from ._text import (
+    build_row_text,
+    clean_arabic,
+    looks_like_scrambled_arabic,
+    merge_lines_by_y,
+)
 
 log = logging.getLogger(__name__)
 
@@ -713,13 +718,17 @@ def extract_page(
 
     # 2. CONTENT DETECTION
     is_empty_selectable = _is_empty_page(page, original_clip)
+    selectable_text = page.get_text("text", clip=original_clip)
+    is_scrambled_selectable = looks_like_scrambled_arabic(selectable_text)
     mixed_regions = _image_only_regions(page, original_clip)
 
     # USER REQUEST: If the page has ANY part that needs OCR (mixed_regions),
     # or if the page is completely empty, we upgrade the entire page to full OCR.
     # This prevents messy merging of PyMuPDF text and Gemini text.
     effective_mode = on_empty
-    if on_empty == "auto" and (is_empty_selectable or mixed_regions):
+    if on_empty == "auto" and (
+        is_empty_selectable or is_scrambled_selectable or mixed_regions
+    ):
         effective_mode = "ocr"
 
     table_tabs = None
@@ -801,6 +810,9 @@ def extract_page(
     if effective_mode == "ocr":
         ocr_results = run_ocr(page, [original_clip], model=gemini_model)
         for y_top, ocr_text in ocr_results:
+            ocr_text = clean_arabic(ocr_text).strip()
+            if not ocr_text:
+                continue
             pieces.append(
                 (
                     original_clip.y0,
