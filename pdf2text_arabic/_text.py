@@ -20,6 +20,7 @@ _DIGIT_ARABIC_RE = re.compile(r"(\d)([\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF])"
 _SPACES_RE = re.compile(r"[ \t]+")
 _NEWLINES_RE = re.compile(r"\n{3,}")
 _ARABIC_TOKEN_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]{2,}")
+_ARABIC_WORD_RE = re.compile(r"[ء-ي]{2,}")
 _ARABIC_RUN_RE = re.compile(
     r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]+"
     r"(?:\s+[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]+)+"
@@ -28,6 +29,7 @@ _LATIN_WORD_RE = re.compile(r"\b[A-Za-z]{4,}\b")
 _MIRRORED_PARENS_RE = re.compile(r"\)\s*([^()\n]{1,30}?)\s*\(")
 _SWAPPED_GUILLEMETS_RE = re.compile(r"»\s*([^«»\n]{1,120}?)\s*«")
 _DCI_VARIANTS_RE = re.compile(r"(?<!\S)(?:م\s+د\s+ت|ت\s+د\s+م)(?!\S)")
+_DUPLICATE_ARABIC_LINE_RE = re.compile(r"(?m)^[ \t]*([ء-ي]{2,})(?:[ \t]+\1)+[ \t]*$")
 _JOINED_DEMO_ARTICLE_RE = re.compile(
     r"\b((?:هذا|هذه|ذلك|تلك|لهذا|لهذه|بهذا|بهذه|وفيهذا|وفيهذه))(?:ال|لا)([ء-ي]{2,})\b"
 )
@@ -89,6 +91,17 @@ _OCR_WORD_FIXES.update(
         "تبادلهالا": "تبادلها لا",
         "إال": "إلا",
         "إلذن": "لإذن",
+        "المجاالت": "المجالات",
+        "مجاالت": "مجالات",
+        "والهيأت": "والهيئات",
+        "الهيأت": "الهيئات",
+        "مالم": "ما لم",
+        "حاصال": "حاصلا",
+        "الحاصالت": "الحاصلات",
+        "خالل": "خلال",
+        "وخالل": "وخلال",
+        "الإخالل": "الإخلال",
+        "لإلخالل": "للإخلال",
     }
 )
 
@@ -140,11 +153,17 @@ def clean_arabic(text: str) -> str:
     # Handles cases like 'اإل' -> 'الإ', 'اال' -> 'الا', and 'ا ا ل' (space jitter)
     # Pattern: Alef + optional space + Alef variant + optional space + Lam.
     # Restrict to token starts so "جسيما الاجراءات" is not merged into one word.
+    text = re.sub(
+        r"(?<![ء-ي])([وفبكل])ا\s*([\u0622\u0623\u0625\u0627])\s*ل(?=[ء-ي])",
+        r"\1ال\2",
+        text,
+    )
     text = re.sub(r"(?<![ء-ي])ا\s*([\u0622\u0623\u0625\u0627])\s*ل", r"ال\1", text)
     
     text = unicodedata.normalize("NFKC", text)
     text = _ZW_RE.sub("", text)
     text = text.replace("\u0640", "")
+    text = _repair_lam_alef_ocr_swaps(text)
     text = _repair_reversed_latin_words(text)
     text = _MIRRORED_PARENS_RE.sub(_repair_mirrored_parentheses, text)
     text = _SWAPPED_GUILLEMETS_RE.sub(r"«\1»", text)
@@ -159,6 +178,26 @@ def clean_arabic(text: str) -> str:
     text = _DCI_VARIANTS_RE.sub("م-د-ت", text)
     text = _NEWLINES_RE.sub("\n\n", text)
     return text
+
+
+def _repair_lam_alef_ocr_swaps(text: str) -> str:
+    """Repair recurring OCR swaps where ``لا`` is emitted as ``ال``."""
+    text = _DUPLICATE_ARABIC_LINE_RE.sub(r"\1", text)
+    text = re.sub(r"(?<![ء-ي])لاليفاء(?![ء-ي])", "للإيفاء", text)
+    text = re.sub(r"(?<![ء-ي])لالتفاقية(?![ء-ي])", "للاتفاقية", text)
+    text = re.sub(r"(?<![ء-ي])المتحانات(?=\s+الحصول)", "لامتحانات", text)
+    text = re.sub(r"(?<![ء-ي])اختالف([ء-ي]*)(?![ء-ي])", r"اختلاف\1", text)
+    text = text.replace("عالوة", "علاوة")
+
+    def repair_token(match: re.Match[str]) -> str:
+        token = match.group(0)
+        if token.endswith("الت"):
+            prefix = token[:-3]
+            if len(prefix) >= 2 or prefix == "آ":
+                return f"{prefix}لات"
+        return token
+
+    return _ARABIC_WORD_RE.sub(repair_token, text)
 
 
 def _arabic_long_tokens(text: str) -> list[str]:
@@ -243,6 +282,10 @@ def _repair_mirrored_parentheses(match: re.Match[str]) -> str:
 def _apply_ocr_word_fixes(text: str) -> str:
     text = re.sub(r"(?<![ء-ي])إصالح([ء-ي]*)(?![ء-ي])", r"إصلاح\1", text)
     text = text.replace("إدالء", "إدلاء")
+    text = text.replace("حاصال", "حاصلا")
+    text = text.replace("خالل", "خلال")
+    text = text.replace("إخالل", "إخلال")
+    text = text.replace("لإلخلال", "للإخلال")
     text = re.sub(r"(?<![ء-ي])لأل([ء-ي]+)(?![ء-ي])", r"للأ\1", text)
     for bad, good in _OCR_WORD_FIXES.items():
         text = re.sub(

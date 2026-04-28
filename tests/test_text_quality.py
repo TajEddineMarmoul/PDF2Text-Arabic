@@ -142,6 +142,72 @@ class ArabicTextQualityTests(unittest.TestCase):
             "لا يمكن أن تستعمل في شروط أمنية لا تقل",
         )
 
+    def test_clean_arabic_repairs_prefixed_lam_alef_swaps(self):
+        fixed = clean_arabic(
+            "باإلعالم والتكوين واإليطالية واإلنتاج باألمر "
+            "واألرضية واألنظمة واإلجراءات واألجهزة"
+        )
+
+        self.assertIn("بالإعلام والتكوين", fixed)
+        self.assertIn("والإيطالية", fixed)
+        self.assertIn("والإنتاج", fixed)
+        self.assertIn("بالأمر", fixed)
+        self.assertIn("والأرضية", fixed)
+        self.assertIn("والأنظمة", fixed)
+        self.assertIn("والإجراءات", fixed)
+        self.assertIn("والأجهزة", fixed)
+
+    def test_clean_arabic_repairs_more_lam_alef_swap_words(self):
+        fixed = clean_arabic(
+            "استعمال المجاالت الجوية والهيأت الحكومية مالم يكن حاصال خلال مدة"
+        )
+
+        self.assertIn("استعمال المجالات الجوية", fixed)
+        self.assertIn("والهيئات الحكومية", fixed)
+        self.assertIn("ما لم يكن حاصلا", fixed)
+        self.assertIn("خلال مدة", fixed)
+
+    def test_clean_arabic_repairs_prefixed_lam_alef_word_variants(self):
+        fixed = clean_arabic(
+            "وخالل فترة الراحة دون الإخالل بالعقوبات حدا لإلخالل "
+            "الحاصالت والدخول والحاصالت إخالله بالإخالل"
+        )
+
+        self.assertIn("وخلال فترة الراحة", fixed)
+        self.assertIn("دون الإخلال بالعقوبات", fixed)
+        self.assertIn("حدا للإخلال", fixed)
+        self.assertIn("الحاصلات والدخول", fixed)
+        self.assertIn("والحاصلات", fixed)
+        self.assertIn("إخلاله بالإخلال", fixed)
+
+    def test_clean_arabic_repairs_generic_lam_alef_ocr_swaps(self):
+        fixed = clean_arabic(
+            "التعديالت حيز التنفيذ حسب نفس المسطرة. "
+            "وفي حالة اختالف في التأويل يرجح النص الفرنسي. "
+            "لاليفاء بهذا الالتزام. "
+            "الحاالت والآالت والعجالت والتحمالت. "
+            "علاوة صحيحة وعالوة ممسوحة. قالت اللجنة."
+        )
+
+        self.assertIn("التعديلات حيز التنفيذ", fixed)
+        self.assertIn("حالة اختلاف في التأويل", fixed)
+        self.assertIn("للإيفاء بهذا الالتزام", fixed)
+        self.assertIn("الحالات والآلات والعجلات والتحملات", fixed)
+        self.assertIn("علاوة صحيحة وعلاوة ممسوحة", fixed)
+        self.assertIn("قالت اللجنة", fixed)
+        self.assertEqual(clean_arabic("حسب الحاالت، إطار العجالت؛"), "حسب الحالات، إطار العجلات؛")
+
+    def test_clean_arabic_repairs_contextual_lam_alef_phrases(self):
+        fixed = clean_arabic(
+            "أن يتقدموا المتحانات الحصول على رخصة السياقة. "
+            "ووفقا لالتفاقية الدولية للسير على الطرق. "
+            "يرجح النص الفرنسي.\n\nعن عن\n\nحكومة المملكة المغربية"
+        )
+
+        self.assertIn("أن يتقدموا لامتحانات الحصول", fixed)
+        self.assertIn("ووفقا للاتفاقية الدولية للسير", fixed)
+        self.assertNotIn("عن عن", fixed)
+
 
 if __name__ == "__main__":
     unittest.main()
