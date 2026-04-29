@@ -38,25 +38,15 @@ _JOINED_PRONOUN_ARTICLE_RE = re.compile(
 _JOINED_SHORT_PRONOUN_ARTICLE_RE = re.compile(
     r"\b((?:(?:في|ب|ل|من|عن|على|إلى)?(?:ها|هم|هن|ه|ك|ي|نا|هما)))(?:ال|لا)([ء-ي]{2,})\b"
 )
+
+# Very minimal fallback dictionary for things that are truly un-patternable
 _OCR_WORD_FIXES = {
     "والتصال": "والاتصال",
-    "لألشخاص": "للأشخاص",
-    "الالزمة": "اللازمة",
     "الامسلحة": "المسلحة",
     "الاعسكري": "العسكري",
     "الاوطنية": "الوطنية",
     "وكذالاتزاماتهم": "وكذا التزاماتهم",
     "الامتخذة": "المتخذة",
-    "صالبة": "صلبة",
-    "إلعادة": "لإعادة",
-    "والمالقات": "والملحقات",
-    "والتهييئات": "والتهيئات",
-    "مالم": "ما لم",
-    "اجراءات": "إجراءات",
-    "الاجراءات": "الإجراءات",
-    "والاجراءات": "والإجراءات",
-    "تبادلهالا": "تبادلها لا",
-    "إال": "إلا",
     "إلذن": "لإذن",
     "الضر ائب": "الضرائب",
     "الصادر ات": "الصادرات",
@@ -66,24 +56,8 @@ _OCR_WORD_FIXES = {
     "وفقاألحكام": "وفقا لأحكام",
     "الستهلاك": "الاستهلاك",
     "بمقتغضى": "بمقتضى",
-    # Fragment fixes for words split by non-joining letter kerning
-    "لأ حكام": "لأحكام",
-    "الأ حكام": "الأحكام",
-    "السلا مة": "السلامة",
-    "الإ دارة": "الإدارة",
-    "علا وة": "علاوة",
-    "الإ خلا ل": "الإخلال",
-    "استغلا ل": "استغلال",
-    "اللا زمة": "اللازمة",
-    "ثلا ثة": "ثلاثة",
-    "ثلا ثين": "ثلاثين",
-    "إغلا ق": "إغلاق",
-    "استلا م": "استلام",
-    "الإ شعار": "الإشعار",
-    "الأ عوان": "الأعوان",
-    "الإ شارة": "الإشارة",
-    "الأ نظمة": "الأنظمة",
-    "آلا ف": "آلاف",
+    "ك المة": "كاملة",
+    "أال ": "ألا ",
 }
 
 # Arabic letters that do NOT join to the next letter
@@ -157,12 +131,11 @@ def _repair_lam_alef_ocr_swaps(text: str) -> str:
     """Repair recurring OCR swaps where ``لا`` is emitted as ``ال``."""
     text = re.sub(r"(?<![ء-ي])لاليفاء(?![ء-ي])", "للإيفاء", text)
     text = re.sub(r"(?<![ء-ي])لالتفاقية(?![ء-ي])", "للاتفاقية", text)
-    text = re.sub(r"(?<![ء-ي])المتحانات(?=\s+الحصول)", "امتحانات", text)
-    text = text.replace("عالوة", "علاوة")
 
     def repair_token(match: re.Match[str]) -> str:
         token = match.group(0)
         
+        # Specific prefix replacement for common Alef-Meem-Lam OCR inversion (امل -> الم)
         if len(token) >= 4:
             token = re.sub(r"^([وفبك]?)امل(?=[ء-ي])", r"\1الم", token)
 
@@ -313,12 +286,13 @@ def _apply_ocr_word_fixes(text: str) -> str:
     text = text.replace("ليال", "ليلا")
     text = text.replace("قابال", "قابلا")
     text = text.replace("لالست", "للاست")
-
+    
     text = re.sub(r"(?<![ء-ي])لأل([ء-ي]+)(?![ء-ي])", r"للأ\1", text)
     
     for bad, good in _OCR_WORD_FIXES.items():
         text = text.replace(bad, good)
     
+    # Standalone 'ال' is almost always 'لا' (no) interpreted incorrectly
     text = re.sub(r"(?<![ء-ي])ال(?![ء-ي])", "لا", text)
     return text
 
@@ -399,6 +373,9 @@ def build_row_text(spans: list[dict]) -> str:
                 if ch1["c"] in "اأإآ" and ch2["c"] == "ل":
                     width1 = ch1["bbox"][2] - ch1["bbox"][0]
                     if width1 < 1.0: # It's a zero-width marker Alef
+                        # Fix the bounding box of the zero-width Alef to span the entire ligature
+                        # so that gap calculations to the NEXT character don't artificially inflate!
+                        ch1["bbox"] = ch2["bbox"]
                         row[i], row[i+1] = row[i+1], row[i] # Swap back to Lam -> Alef
                         i += 1
                 i += 1
@@ -439,9 +416,9 @@ def build_row_text(spans: list[dict]) -> str:
                 if prev_c not in _NON_JOINING_FORWARD:
                     threshold = space_threshold * 3.0
                 else:
-                    # Relaxed threshold for non-joining letters (e.g. ا, ر) to prevent 
-                    # words like "الضرائب" or "حالات" or "ثلاثة" from splitting.
-                    threshold = space_threshold * 2.5
+                    # Non-joining letters naturally have gaps, but the ligature box fix
+                    # makes this much more stable.
+                    threshold = space_threshold * 2.6
             else:
                 threshold = space_threshold
                 
