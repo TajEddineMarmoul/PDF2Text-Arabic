@@ -66,6 +66,24 @@ _OCR_WORD_FIXES = {
     "وفقاألحكام": "وفقا لأحكام",
     "الستهلاك": "الاستهلاك",
     "بمقتغضى": "بمقتضى",
+    # Fragment fixes for words split by non-joining letter kerning
+    "لأ حكام": "لأحكام",
+    "الأ حكام": "الأحكام",
+    "السلا مة": "السلامة",
+    "الإ دارة": "الإدارة",
+    "علا وة": "علاوة",
+    "الإ خلا ل": "الإخلال",
+    "استغلا ل": "استغلال",
+    "اللا زمة": "اللازمة",
+    "ثلا ثة": "ثلاثة",
+    "ثلا ثين": "ثلاثين",
+    "إغلا ق": "إغلاق",
+    "استلا م": "استلام",
+    "الإ شعار": "الإشعار",
+    "الأ عوان": "الأعوان",
+    "الإ شارة": "الإشارة",
+    "الأ نظمة": "الأنظمة",
+    "آلا ف": "آلاف",
 }
 
 # Arabic letters that do NOT join to the next letter
@@ -78,12 +96,7 @@ _STRIP_ARABIC_TOKEN = "\"'`~!@#$%^&*()-_=+[{]}\\|;:,<.>/?؟؛،«»“”\n\r\t 
 # ---------------------------------------------------------------------------
 
 def looks_like_scrambled_arabic(text: str) -> bool:
-    """Return True when selectable Arabic is likely stored backwards.
-
-    The strongest signal is reversed definite-article words: normal Arabic
-    commonly starts words with ``ال``; scrambled extraction often turns that
-    into a word ending in ``لا``.
-    """
+    """Return True when selectable Arabic is likely stored backwards."""
     long_tokens = _arabic_long_tokens(text)
     if not long_tokens:
         return False
@@ -113,9 +126,6 @@ def clean_arabic(text: str) -> str:
     text = text.replace("\uf02d", "-")
     
     # GLOBAL LIGATURE CORRECTOR: Fix common 'Lam-Alef' decomposition artifacts
-    # Handles cases like 'اإل' -> 'الإ', 'اال' -> 'الا', and 'ا ا ل' (space jitter)
-    # Pattern: Alef + optional space + Alef variant + optional space + Lam.
-    # Restrict to token starts so "جسيما الاجراءات" is not merged into one word.
     text = re.sub(
         r"(?<![ء-ي])([وفبكل])ا\s*([\u0622\u0623\u0625\u0627])\s*ل(?=[ء-ي])",
         r"\1ال\2",
@@ -144,11 +154,7 @@ def clean_arabic(text: str) -> str:
 
 
 def _repair_lam_alef_ocr_swaps(text: str) -> str:
-    """Repair recurring OCR swaps where ``لا`` is emitted as ``ال``.
-    
-    Generic rule: Arabic words ending in broken 'الت', 'الء' 
-    become 'لات', 'لاء' when safe (length >= 5).
-    """
+    """Repair recurring OCR swaps where ``لا`` is emitted as ``ال``."""
     text = re.sub(r"(?<![ء-ي])لاليفاء(?![ء-ي])", "للإيفاء", text)
     text = re.sub(r"(?<![ء-ي])لالتفاقية(?![ء-ي])", "للاتفاقية", text)
     text = re.sub(r"(?<![ء-ي])المتحانات(?=\s+الحصول)", "امتحانات", text)
@@ -157,32 +163,20 @@ def _repair_lam_alef_ocr_swaps(text: str) -> str:
     def repair_token(match: re.Match[str]) -> str:
         token = match.group(0)
         
-        # Specific prefix replacement for common Alef-Meem-Lam OCR inversion (امل -> الم)
         if len(token) >= 4:
             token = re.sub(r"^([وفبك]?)امل(?=[ء-ي])", r"\1الم", token)
 
-        # Targeted generalized end-of-word repairs (plurals, etc.)
-        # Minimum length 5 protects common words like قالت.
         if len(token) >= 5 or token.startswith("آ"):
-            for bad, good in [
-                ("الت", "لات"), ("الء", "لاء")
-            ]:
+            for bad, good in [("الت", "لات"), ("الء", "لاء")]:
                 if token.endswith(bad):
                     return token[:-len(bad)] + good
         
-        # Middle of word: specific recurring patterns
-        if "استغالل" in token:
-            token = token.replace("استغالل", "استغلال")
-        if "إصالح" in token:
-            token = token.replace("إصالح", "إصلاح")
-        if "المتحانات" in token:
-            token = token.replace("المتحانات", "امتحانات")
-        if "الهيأت" in token:
-            token = token.replace("الهيأت", "الهيئات")
-        if "القتراح" in token:
-            token = token.replace("القتراح", "لاقتراح")
-        if "إخالال" in token:
-            token = token.replace("إخالال", "إخلالا")
+        if "استغالل" in token: token = token.replace("استغالل", "استغلال")
+        if "إصالح" in token: token = token.replace("إصالح", "إصلاح")
+        if "المتحانات" in token: token = token.replace("المتحانات", "امتحانات")
+        if "الهيأت" in token: token = token.replace("الهيأت", "الهيئات")
+        if "القتراح" in token: token = token.replace("القتراح", "لاقتراح")
+        if "إخالال" in token: token = token.replace("إخالال", "إخلالا")
 
         return token
 
@@ -270,27 +264,24 @@ def _repair_mirrored_parentheses(match: re.Match[str]) -> str:
 
 def _apply_ocr_word_fixes(text: str) -> str:
     """Apply specific word-level OCR corrections as a fallback."""
-    # Contextual repairs for common artifacts
     text = text.replace("خالل", "خلال")
     text = text.replace("مالئمة", "ملائمة")
     text = text.replace("مالءمة", "ملاءمة")
     text = text.replace("حاصال", "حاصلا")
     text = text.replace("إخالل", "إخلال")
-    
-    # Advanced OCR artifact fixes based on corpus evaluation
     text = text.replace("لإلخلال", "للإخلال")
     text = text.replace("إعالم", "إعلام")
     text = text.replace("اعالم", "اعلام")
     text = text.replace("اختالف", "اختلاف")
     text = text.replace("استهالك", "استهلاك")
     text = text.replace("أعاله", "أعلاه")
-    text = text.replace("سالمة", "سلامة") # catches السالمة, لسالمة, سالمة
+    text = text.replace("سالمة", "سلامة")
     text = text.replace("المالحظة", "الملاحظة")
     text = text.replace("الالئحة", "اللائحة")
     text = text.replace("الالئحتين", "اللائحتين")
     text = text.replace("ثالثين", "ثلاثين")
     text = text.replace("ثالثون", "ثلاثون")
-    text = text.replace("ثالثة", "ثلاثة") # Often "ثلاثة" is OCR'ed as "ثالثة".
+    text = text.replace("ثالثة", "ثلاثة")
     text = text.replace("ثالثية", "ثلاثية")
     text = text.replace("صالحية", "صلاحية")
     text = text.replace("صالحيتها", "صلاحيتها")
@@ -322,15 +313,12 @@ def _apply_ocr_word_fixes(text: str) -> str:
     text = text.replace("ليال", "ليلا")
     text = text.replace("قابال", "قابلا")
     text = text.replace("لالست", "للاست")
-    
-    text = re.sub(r"(?<![ء-ي])ا مل(?=[ء-ي])", "الم", text)
+
     text = re.sub(r"(?<![ء-ي])لأل([ء-ي]+)(?![ء-ي])", r"للأ\1", text)
     
     for bad, good in _OCR_WORD_FIXES.items():
-        # Handle simple replacements to catch words even with prefixes
         text = text.replace(bad, good)
     
-    # Standalone 'ال' is almost always 'لا' (no) interpreted incorrectly
     text = re.sub(r"(?<![ء-ي])ال(?![ء-ي])", "لا", text)
     return text
 
@@ -400,6 +388,20 @@ def build_row_text(spans: list[dict]) -> str:
             # RTL: largest X first (right to left).
             # We use a 1.0px snap to handle horizontal jitter in tables.
             row.sort(key=lambda c: (-round(c["bbox"][0]), -c["bbox"][1]))
+            
+            # NATIVE LAM-ALEF LIGATURE FIX:
+            # In PDFs, the 'لا' ligature often encodes 'ا' as a zero-width char placed 
+            # at the right boundary of the 'ل'. In RTL sorting, this places 'ا' before 'ل', 
+            # causing widespread "ال" -> "لا" inversions (e.g., السالمة instead of السلامة).
+            i = 0
+            while i < len(row) - 1:
+                ch1, ch2 = row[i], row[i+1]
+                if ch1["c"] in "اأإآ" and ch2["c"] == "ل":
+                    width1 = ch1["bbox"][2] - ch1["bbox"][0]
+                    if width1 < 1.0: # It's a zero-width marker Alef
+                        row[i], row[i+1] = row[i+1], row[i] # Swap back to Lam -> Alef
+                        i += 1
+                i += 1
         else:
             # LTR: smallest X first (left to right)
             row.sort(key=lambda c: (round(c["bbox"][0]), c["bbox"][1]))
@@ -433,8 +435,13 @@ def build_row_text(spans: list[dict]) -> str:
                 gap = x0 - prev_x1
             
             # Connection check
-            if (prev_c is not None and is_arabic(prev_c) and prev_c not in _NON_JOINING_FORWARD and is_arabic(c)):
-                threshold = space_threshold * 3.0
+            if prev_c is not None and is_arabic(prev_c) and is_arabic(c):
+                if prev_c not in _NON_JOINING_FORWARD:
+                    threshold = space_threshold * 3.0
+                else:
+                    # Relaxed threshold for non-joining letters (e.g. ا, ر) to prevent 
+                    # words like "الضرائب" or "حالات" or "ثلاثة" from splitting.
+                    threshold = space_threshold * 2.5
             else:
                 threshold = space_threshold
                 
