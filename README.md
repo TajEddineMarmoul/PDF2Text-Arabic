@@ -73,21 +73,21 @@ Furthermore, this extreme right-hand coordinate artificially inflates the gap to
 
 **pdf2text-arabic** solves this "outside the box" natively. During extraction, it mathematically detects overlapping zero-width characters and recalculates their bounding boxes, automatically curing 99.9% of Arabic OCR inversions and spacing drops without relying on a dictionary:
 
-> ❌ **Standard Engine (Broken Bounding Boxes & Inversions):**
+> ❌ **Standard Engine:**
 > 
-> وترتيبات **االنقاذ**، والمعدات **المالحية** السفينية، والمطبوعات **المالحية**، ووسائل
+> وترتيبات <span style="color:red; font-weight:bold">االنقاذ</span>، والمعدات <span style="color:red; font-weight:bold">المالحية</span> السفينية، والمطبوعات <span style="color:red; font-weight:bold">المالحية</span>، ووسائل
 > 
-> واجهزة ونظم الوقاية من الحرائق و**السالمة** الحرائقية، ومعدات وترتيبات
+> واجهزة ونظم الوقاية من الحرائق و<span style="color:red; font-weight:bold">السالمة</span> الحرائقية، ومعدات وترتيبات
 > 
-> تتماش** ى **تًماما مع متطلبات هذه **الالئحة** ومع القوانين والمراسيم و**األوامر**
+> <span style="color:red; font-weight:bold">تتماش ى</span> تًماما مع متطلبات هذه <span style="color:red; font-weight:bold">الالئحة</span> ومع القوانين والمراسيم و<span style="color:red; font-weight:bold">األوامر</span>
 
-> ✅ **pdf2text-arabic (Native Coordinate Fix):**
+> ✅ **pdf2text-arabic:**
 > 
-> وترتيبات **الانقاذ**، والمعدات **الملاحية** السفينية، والمطبوعات **الملاحية**، ووسائل صعود
+> وترتيبات <span style="color:green; font-weight:bold">الانقاذ</span>، والمعدات <span style="color:green; font-weight:bold">الملاحية</span> السفينية، والمطبوعات <span style="color:green; font-weight:bold">الملاحية</span>، ووسائل
 > 
-> وأجهزة ونظم الوقاية من الحرائق و**السلامة** الحرائقية، ومعدات وترتيبات
+> وأجهزة ونظم الوقاية من الحرائق و<span style="color:green; font-weight:bold">السلامة</span> الحرائقية، ومعدات وترتيبات
 > 
-> **تتماشى** تًماما مع متطلبات هذه **اللائحة** ومع القوانين والمراسيم و**الأوامر**
+> <span style="color:green; font-weight:bold">تتماشى</span> تًماما مع متطلبات هذه <span style="color:green; font-weight:bold">اللائحة</span> ومع القوانين والمراسيم و<span style="color:green; font-weight:bold">الأوامر</span>
 
 ## What It Fixes
 
