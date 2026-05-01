@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.1](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/compare/v1.2.0...v1.2.1) (2026-05-01)
+
+
+### Bug Fixes
+
+* handle Gemini OCR recitation block and improve footer detection ([fa584fd](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/commit/fa584fd65e6dccc49025278ce6d8a2552c53427a))
+* update default crop values to 0 for improved extraction accuracy ([bac1b88](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/commit/bac1b8835ca38c2e500ce7888ac60c2402771a42))
+
 ## [1.2.0](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/compare/v1.1.1...v1.2.0) (2026-05-01)
 
 
