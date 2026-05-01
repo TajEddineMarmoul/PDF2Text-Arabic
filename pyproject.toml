@@ -1,6 +1,6 @@
 [project]
 name = "pdf2text-arabic"
-version = "0.5.0"
+version = "1.0.0"
 description = "Advanced Arabic-first PDF text extraction with layout repair, table reconstruction, and OCR fallback"
 readme = "README.md"
 requires-python = ">=3.13"
