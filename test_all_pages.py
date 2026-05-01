@@ -32,7 +32,7 @@ def process_full_pdf(pdf_path):
         # 2. Use a separate page instance for visuals
         page_vis = doc_vis.load_page(p_num)
         pix = get_debug_pixmap(
-            page_vis, dpi=120, crop_bottom=0, crop_top=0, ocr_strategy="auto"
+            page_vis, dpi=120, ocr_strategy="auto"
         )
         img_path = os.path.join(pdf_out_dir, f"page_{p_num+1:03d}.png")
         pix.save(img_path)

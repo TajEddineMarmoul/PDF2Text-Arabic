@@ -766,8 +766,8 @@ def order_reading_rtl(
 def extract_page(
     page: fitz.Page,
     *,
-    crop_top: float = 8.0,
-    crop_bottom: float = 4.5,
+    crop_top: float = 0.0,
+    crop_bottom: float = 0.0,
     crop_unit: Literal["px", "pct"] = "pct",
     auto_crop_top: bool = True,
     auto_crop_bottom: bool = True,
@@ -913,8 +913,8 @@ def extract_page(
 def extract_pdf(
     pdf_path: str,
     *,
-    crop_top: float = 8.0,
-    crop_bottom: float = 4.5,
+    crop_top: float = 0.0,
+    crop_bottom: float = 0.0,
     crop_unit: Literal["px", "pct"] = "pct",
     auto_crop_top: bool = True,
     auto_crop_bottom: bool = True,
@@ -940,8 +940,8 @@ def extract_pdf(
 def extract_pdf_result(
     pdf_path: str,
     *,
-    crop_top: float = 8.0,
-    crop_bottom: float = 4.5,
+    crop_top: float = 0.0,
+    crop_bottom: float = 0.0,
     crop_unit: Literal["px", "pct"] = "pct",
     auto_crop_top: bool = True,
     auto_crop_bottom: bool = True,

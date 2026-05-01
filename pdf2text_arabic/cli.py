@@ -32,14 +32,14 @@ def main():
     parser.add_argument(
         "--crop-top",
         type=float,
-        default=8.0,
-        help="Crop from top of each page (default: 8.0).",
+        default=0.0,
+        help="Crop from top of each page (default: 0.0).",
     )
     parser.add_argument(
         "--crop-bottom",
         type=float,
-        default=4.5,
-        help="Crop from bottom of each page (default: 4.5).",
+        default=0.0,
+        help="Crop from bottom of each page (default: 0.0).",
     )
     parser.add_argument(
         "--crop-unit",
