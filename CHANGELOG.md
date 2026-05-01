@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.2](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/compare/v1.2.1...v1.2.2) (2026-05-01)
+
+
+### Bug Fixes
+
+* update default OCR strategy to 'auto' for improved extraction handling ([ed92ad0](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/commit/ed92ad092d43583c308d956c5c79e712da1c16d6))
+
 ## [1.2.1](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/compare/v1.2.0...v1.2.1) (2026-05-01)
 
 
