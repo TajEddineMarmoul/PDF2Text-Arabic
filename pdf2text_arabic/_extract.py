@@ -54,7 +54,7 @@ _PAGE_NUMBER_BOTTOM_PCT = 0.12
 def _resolve_ocr_strategy(
     ocr_strategy: OcrStrategy | None = None,
     *,
-    default: OcrStrategy = "warn",
+    default: OcrStrategy = "auto",
 ) -> OcrStrategy:
     """Normalize the OCR strategy option."""
     if default not in _VALID_OCR_STRATEGIES:
@@ -772,7 +772,7 @@ def extract_page(
     auto_crop_top: bool = True,
     auto_crop_bottom: bool = True,
     detect_footer: bool = True,
-    ocr_strategy: OcrStrategy | None = None,
+    ocr_strategy: OcrStrategy | None = "auto",
     table_strategy: str | None = None,
     gemini_model: str = DEFAULT_GEMINI_MODEL,
 ) -> tuple[str, dict | None]:
@@ -919,7 +919,7 @@ def extract_pdf(
     auto_crop_top: bool = True,
     auto_crop_bottom: bool = True,
     detect_footer: bool = True,
-    ocr_strategy: OcrStrategy | None = None,
+    ocr_strategy: OcrStrategy | None = "auto",
     table_strategy: str | None = None,
     gemini_model: str = DEFAULT_GEMINI_MODEL,
 ) -> str:
@@ -946,7 +946,7 @@ def extract_pdf_result(
     auto_crop_top: bool = True,
     auto_crop_bottom: bool = True,
     detect_footer: bool = True,
-    ocr_strategy: OcrStrategy | None = None,
+    ocr_strategy: OcrStrategy | None = "auto",
     table_strategy: str | None = None,
     gemini_model: str = DEFAULT_GEMINI_MODEL,
 ) -> ExtractionResult:

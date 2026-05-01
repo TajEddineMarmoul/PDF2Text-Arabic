@@ -39,7 +39,7 @@ def get_debug_pixmap(
     auto_crop_top: bool = True,
     auto_crop_bottom: bool = True,
     detect_footer: bool = True,
-    ocr_strategy: OcrStrategy | None = None,
+    ocr_strategy: OcrStrategy | None = "auto",
 ) -> fitz.Pixmap:
     """Perform layout analysis and return a Pixmap with debug overlays."""
     
@@ -220,7 +220,7 @@ def draw_page_layout(
     auto_crop_top: bool = True,
     auto_crop_bottom: bool = True,
     detect_footer: bool = True,
-    ocr_strategy: OcrStrategy | None = None,
+    ocr_strategy: OcrStrategy | None = "auto",
 ) -> None:
     """Render *page* with extraction overlays and show it inline."""
     from IPython.display import Image, display

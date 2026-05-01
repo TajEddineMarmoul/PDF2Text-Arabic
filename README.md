@@ -383,7 +383,7 @@ Extract all pages and return one text string.
 | `auto_crop_top` | `bool` | `True` | Auto-adjust top crop for repeated headers/page numbers. |
 | `auto_crop_bottom` | `bool` | `True` | Auto-adjust bottom crop for page numbers. |
 | `detect_footer` | `bool` | `True` | Detect and remove footnote/reference footers for selectable-text extraction. |
-| `ocr_strategy` | <code>"never" &#124; "warn" &#124; "auto" &#124; "force"</code> | `"warn"` | OCR decision strategy. |
+| `ocr_strategy` | <code>"never" &#124; "warn" &#124; "auto" &#124; "force"</code> | `"auto"` | OCR decision strategy. |
 | `table_strategy` | <code>str &#124; None</code> | `None` | Optional PyMuPDF table strategy, for example `"lines"`, `"lines_strict"`, or `"text"`. |
 | `gemini_model` | `str` | `"gemini-3-flash-preview"` | Gemini model for OCR. |
 

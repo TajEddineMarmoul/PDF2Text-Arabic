@@ -65,14 +65,14 @@ def main():
     parser.add_argument(
         "--ocr-strategy",
         choices=["never", "warn", "auto", "force"],
-        default=None,
+        default="auto",
         help=(
             "OCR decision strategy: "
             "'never' (do not call OCR), "
             "'warn' (log + skip), "
             "'auto' (OCR only when the page looks unreliable), "
             "'force' (OCR every page). "
-            "Default: warn."
+            "Default: auto."
         ),
     )
     parser.add_argument(
