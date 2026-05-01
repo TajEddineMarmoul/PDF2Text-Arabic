@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/compare/v1.1.0...v1.1.1) (2026-05-01)
+
+
+### Bug Fixes
+
+* update publish command to include repository parameter ([851ae50](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/commit/851ae5010c717d98a502cec127dadf9186f62dc4))
+
 ## [1.1.0](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/compare/v1.0.0...v1.1.0) (2026-05-01)
 
 
