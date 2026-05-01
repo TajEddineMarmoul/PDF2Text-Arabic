@@ -55,13 +55,13 @@ Selected from `naw/page_036.png` because it shows superscript reference tips in 
 
 ### Full-page OCR for Scanned Pages
 
-Selected from the royal speech document because the page is effectively image-based. With `on_empty="auto"`, the library selects the full geometric crop for OCR. Footer detection is not allowed to shrink this OCR box.
+Selected from the royal speech document because the page is effectively image-based. With `ocr_strategy="auto"`, the library selects the full geometric crop for OCR. Footer detection is not allowed to shrink this OCR box.
 
 <img src="assets/showcase_full_page_ocr.png" width="560" alt="Full-page OCR trigger" />
 
 ### Image Region Debugging Without OCR
 
-Selected from the 1978 finance law with `on_empty="ignore"` to show image-only regions without forcing OCR. This is useful when you want to inspect what would trigger OCR.
+Selected from the 1978 finance law with `ocr_strategy="never"` to show image-only regions without forcing OCR. This is useful when you want to inspect what would trigger OCR.
 
 <img src="assets/showcase_image_regions.png" width="560" alt="Image-only region detection" />
 
@@ -102,19 +102,19 @@ Furthermore, this extreme right-hand coordinate artificially inflates the gap to
 | Weak-border tables | Uses targeted fallback detection when default PyMuPDF misses rows. |
 | Side-by-side tables | Uses bounding boxes so separate regions do not collapse into one grid. |
 | Footnotes and references | Detects superscript tips and crops matching footer reference blocks. |
-| Scanned/image pages | Supports `warn`, `ignore`, `auto`, and `ocr` handling. |
+| Scanned/image pages | Supports `warn`, `never`, `auto`, and `force` OCR strategies. |
 | Debugging extraction | Renders color-coded overlays for text, tables, footers, superscripts, and OCR. |
 
 ## How It Works
 
-The extractor first decides whether the page can be handled from the selectable text layer. If `on_empty="auto"` selects OCR, the OCR image uses only the geometric crop settings. Footer detection is skipped for that OCR path.
+The extractor first decides whether the page can be handled from the selectable text layer. If `ocr_strategy="auto"` selects OCR, the OCR image uses only the geometric crop settings. Footer detection is skipped for that OCR path.
 
 ```mermaid
 flowchart TD
     A["fitz.Page"] --> B["Apply geometric crop\ncrop_top / crop_bottom / auto-crop"]
     B --> C["Pre-scan tables\nPyMuPDF table candidates"]
     C --> D["Detect image-only regions\nand empty selectable pages"]
-    D --> E{"on_empty selects OCR?"}
+    D --> E{"ocr_strategy selects OCR?"}
     E -- "yes" --> F["Run full-page OCR\non geometric crop only"]
     E -- "no" --> G["Detect footers\nfrom superscript references"]
     G --> H["Extract tables and selectable text"]
@@ -134,11 +134,11 @@ sequenceDiagram
     participant Text as Text/table extractor
     participant OCR as Gemini OCR
 
-    Caller->>Extract: page + crop options + on_empty
+    Caller->>Extract: page + crop options + ocr_strategy
     Extract->>Extract: compute geometric clip
     Extract->>Images: check empty/selectable layer and image-only regions
     Images-->>Extract: empty flag + OCR trigger regions
-    alt on_empty is auto and OCR is needed
+    alt ocr_strategy is auto and OCR is needed
         Extract->>OCR: send geometric clip only
         OCR-->>Extract: OCR text
     else selectable text path
@@ -215,7 +215,7 @@ text = extract_pdf(
     auto_crop_top=True,
     auto_crop_bottom=True,
     detect_footer=True,
-    on_empty="warn",
+    ocr_strategy="warn",
 )
 ```
 
@@ -240,7 +240,7 @@ Use `extract_pdf_result()` when you need page-level metadata and warnings.
 ```python
 from pdf2text_arabic import extract_pdf_result
 
-result = extract_pdf_result("document.pdf", on_empty="warn")
+result = extract_pdf_result("document.pdf", ocr_strategy="warn")
 
 print(result.pages_total)
 print(result.pages_with_text)
@@ -254,31 +254,40 @@ print(result.text)
 
 | Situation | Use |
 |---|---|
-| Text PDFs and no OCR key configured | `on_empty="warn"` |
-| You want to inspect the selectable layer only | `on_empty="ignore"` |
-| OCR is configured and scanned pages matter | `on_empty="auto"` |
-| Every page should go through OCR | `on_empty="ocr"` |
+| Text PDFs and no OCR key configured | `ocr_strategy="warn"` |
+| You want to inspect the selectable layer only | `ocr_strategy="never"` |
+| OCR is configured and scanned pages matter | `ocr_strategy="auto"` |
+| Every page should go through OCR | `ocr_strategy="force"` |
 | Legal PDFs with numbered references | `detect_footer=True` |
 | You need footnotes kept in the output | `detect_footer=False` |
 
-## OCR Modes
+## OCR Strategy
 
-`on_empty` controls what happens when a page has missing selectable text or image-only content.
+`ocr_strategy` controls when the extractor is allowed to call OCR. The old `on_empty` option is still accepted as a deprecated alias for compatibility.
 
-| Mode | Behavior |
+| Strategy | Behavior |
 |---|---|
 | `warn` | Default extraction mode. Warns/skips pages that need OCR instead of silently returning partial text. |
-| `ignore` | Does not call OCR. Useful when you want to inspect the selectable layer or debug image regions. |
+| `never` | Does not call OCR. Useful when you want to inspect the selectable layer or debug image regions. |
 | `auto` | If the page has image-only content or no reliable selectable text, sends the cropped full page to OCR. |
-| `ocr` | Forces OCR for the cropped full page. |
+| `force` | Forces OCR for the cropped full page. |
+
+Legacy mapping:
+
+| Deprecated `on_empty` | Use `ocr_strategy` |
+|---|---|
+| `ignore` | `never` |
+| `warn` | `warn` |
+| `auto` | `auto` |
+| `ocr` | `force` |
 
 Important: full-page OCR uses only the geometric crop from `crop_top`, `crop_bottom`, `crop_unit`, `auto_crop_top`, and `auto_crop_bottom`. It does not use `detect_footer` to shrink the OCR image. This protects scanned pages from false footer crops.
 
-OCR uses Gemini through `google-genai`. Set `GEMINI_API_KEY` in the environment or `.env` before using `auto` or `ocr`.
+OCR uses Gemini through `google-genai`. Set `GEMINI_API_KEY` in the environment or `.env` before using `auto` or `force`.
 
 ```bash
 set GEMINI_API_KEY=your_key_here
-pdf2text-arabic -f scanned.pdf --on-empty auto
+pdf2text-arabic -f scanned.pdf --ocr-strategy auto
 ```
 
 ```python
@@ -286,9 +295,9 @@ from pdf2text_arabic import extract_pdf, get_capabilities
 
 caps = get_capabilities()
 if caps["ocr"]:
-    text = extract_pdf("scanned.pdf", on_empty="auto")
+    text = extract_pdf("scanned.pdf", ocr_strategy="auto")
 else:
-    text = extract_pdf("scanned.pdf", on_empty="warn")
+    text = extract_pdf("scanned.pdf", ocr_strategy="warn")
 ```
 
 ## Table Output Format
@@ -329,7 +338,7 @@ import fitz
 from pdf2text_arabic.debug import get_debug_pixmap
 
 with fitz.open("document.pdf") as doc:
-    pix = get_debug_pixmap(doc[0], dpi=120, on_empty="auto")
+    pix = get_debug_pixmap(doc[0], dpi=120, ocr_strategy="auto")
     pix.save("debug_page_001.png")
 ```
 
@@ -347,7 +356,7 @@ Overlay colors:
 | Red | Left-column text row or heading/article block. |
 | Grey | Header/footer geometric crop band. |
 
-Debug defaults to `on_empty="auto"`. If full-page OCR is selected, PyMuPDF text/table boxes are hidden because they are not used in the final OCR output.
+Debug defaults to `ocr_strategy="auto"`. If full-page OCR is selected, PyMuPDF text/table boxes are hidden because they are not used in the final OCR output.
 
 ## CLI
 
@@ -362,10 +371,10 @@ pdf2text-arabic -f document.pdf -o ./output/plain_text
 pdf2text-arabic -f document.pdf --no-footer
 
 # Use OCR automatically for image-heavy pages
-pdf2text-arabic -f scanned.pdf --on-empty auto
+pdf2text-arabic -f scanned.pdf --ocr-strategy auto
 
 # Avoid OCR and use only the selectable text layer
-pdf2text-arabic -f document.pdf --on-empty ignore
+pdf2text-arabic -f document.pdf --ocr-strategy never
 ```
 
 ## API Reference
@@ -383,7 +392,8 @@ Extract all pages and return one text string.
 | `auto_crop_top` | `bool` | `True` | Auto-adjust top crop for repeated headers/page numbers. |
 | `auto_crop_bottom` | `bool` | `True` | Auto-adjust bottom crop for page numbers. |
 | `detect_footer` | `bool` | `True` | Detect and remove footnote/reference footers for selectable-text extraction. |
-| `on_empty` | <code>"ignore" &#124; "warn" &#124; "auto" &#124; "ocr"</code> | `"warn"` | OCR/image-page handling. |
+| `ocr_strategy` | <code>"never" &#124; "warn" &#124; "auto" &#124; "force"</code> | `"warn"` | OCR decision strategy. |
+| `on_empty` | <code>"ignore" &#124; "warn" &#124; "auto" &#124; "ocr"</code> | deprecated | Compatibility alias for `ocr_strategy`. |
 | `table_strategy` | <code>str &#124; None</code> | `None` | Optional PyMuPDF table strategy, for example `"lines"`, `"lines_strict"`, or `"text"`. |
 | `gemini_model` | `str` | `"gemini-3-flash-preview"` | Gemini model for OCR. |
 
@@ -429,9 +439,9 @@ pdf2text_arabic/
 ## Practical Guidance
 
 - Use `extract_pdf_result()` for agents and automation.
-- Use `on_empty="warn"` when OCR is not configured.
-- Use `on_empty="auto"` when `GEMINI_API_KEY` is configured and scanned pages matter.
-- Use `on_empty="ignore"` when you want to inspect what the selectable layer alone provides.
+- Use `ocr_strategy="warn"` when OCR is not configured.
+- Use `ocr_strategy="auto"` when `GEMINI_API_KEY` is configured and scanned pages matter.
+- Use `ocr_strategy="never"` when you want to inspect what the selectable layer alone provides.
 - Keep `detect_footer=True` for official legal documents with numbered references.
 - Disable footer detection only if you explicitly need footnotes mixed into the body.
 - Use debug PNGs before changing extraction thresholds; most problems are page-layout specific.
@@ -442,7 +452,7 @@ pdf2text_arabic/
 - The extractor is slower than raw `page.get_text("text")` because it reads geometry, font data, tables, image regions, and character-level layout.
 - Table output is plain separator text, not markdown and not a spreadsheet format.
 - Footer detection is conservative. If the page does not expose enough reliable reference signals, the extractor may keep footer-like text rather than risk deleting body text.
-- Some PDFs contain broken or misleading selectable text layers. Use `on_empty="auto"` and debug overlays for those files.
+- Some PDFs contain broken or misleading selectable text layers. Use `ocr_strategy="auto"` and debug overlays for those files.
 
 ## Development Notes
 

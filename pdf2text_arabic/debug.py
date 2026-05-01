@@ -13,6 +13,8 @@ from typing import Any, Literal
 import fitz
 
 from ._extract import (
+    LegacyOnEmpty,
+    OcrStrategy,
     _PAGE_NUMBER_BOTTOM_PCT,
     _body_font_size,
     _compute_clip,
@@ -20,6 +22,7 @@ from ._extract import (
     _is_empty_page,
     _is_page_number_text,
     _is_superscript,
+    _resolve_ocr_strategy,
     detect_footer_y,
     order_reading_rtl,
 )
@@ -37,7 +40,8 @@ def get_debug_pixmap(
     auto_crop_top: bool = True,
     auto_crop_bottom: bool = True,
     detect_footer: bool = True,
-    on_empty: Literal["ignore", "warn", "ocr", "auto"] = "auto",
+    ocr_strategy: OcrStrategy | None = None,
+    on_empty: LegacyOnEmpty | None = None,
 ) -> fitz.Pixmap:
     """Perform layout analysis and return a Pixmap with debug overlays."""
     
@@ -63,9 +67,14 @@ def get_debug_pixmap(
     is_scrambled_selectable = looks_like_scrambled_arabic(
         page.get_text("text", clip=original_clip)
     )
+    strategy = _resolve_ocr_strategy(
+        ocr_strategy=ocr_strategy,
+        on_empty=on_empty,
+        default="auto",
+    )
 
-    full_page_ocr = on_empty == "ocr" or (
-        on_empty == "auto"
+    full_page_ocr = strategy == "force" or (
+        strategy == "auto"
         and (is_empty_selectable or is_scrambled_selectable or bool(ocr_regions))
     )
 
@@ -127,7 +136,7 @@ def get_debug_pixmap(
     final_order = order_reading_rtl(all_items, clip, bbox=lambda x: x["bbox"])
 
     trigger_index = None
-    if full_page_ocr and on_empty == "auto":
+    if full_page_ocr and strategy == "auto":
         for idx, item in enumerate(final_order):
             if item["type"] == "IMAGE":
                 trigger_index = idx
@@ -188,7 +197,7 @@ def get_debug_pixmap(
                 else "FULL PAGE OCR - triggered here"
             )
             label_y = max(original_clip.y0 + 14, trigger_box.y0 - 10)
-        elif on_empty == "ocr":
+        elif strategy == "force":
             label = "FULL PAGE OCR - forced"
             label_y = original_clip.y0 + 14
         elif is_scrambled_selectable:

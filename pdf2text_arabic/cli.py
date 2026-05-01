@@ -63,16 +63,25 @@ def main():
         help="Disable automatic footnote separator detection.",
     )
     parser.add_argument(
+        "--ocr-strategy",
+        choices=["never", "warn", "auto", "force"],
+        default=None,
+        help=(
+            "OCR decision strategy: "
+            "'never' (do not call OCR), "
+            "'warn' (log + skip), "
+            "'auto' (OCR only when the page looks unreliable), "
+            "'force' (OCR every page). "
+            "Default: warn."
+        ),
+    )
+    parser.add_argument(
         "--on-empty",
         choices=["ignore", "warn", "ocr", "auto"],
-        default="warn",
+        default=None,
         help=(
-            "How to handle image-only pages: "
-            "'ignore' (skip silently), "
-            "'warn' (log + skip), "
-            "'auto' (try text extraction first, then OCR for images), "
-            "'ocr' (force OCR only without text extraction). "
-            "Default: warn."
+            "Deprecated alias for --ocr-strategy. "
+            "Use 'ignore' -> 'never' and 'ocr' -> 'force'."
         ),
     )
     parser.add_argument(
@@ -82,6 +91,8 @@ def main():
         help="PyMuPDF table detection strategy. Use 'text' for tables without borders.",
     )
     args = parser.parse_args()
+    if args.ocr_strategy is not None and args.on_empty is not None:
+        parser.error("--on-empty is deprecated; use only --ocr-strategy.")
 
     logging.basicConfig(
         level=logging.WARNING,
@@ -118,6 +129,7 @@ def main():
                 auto_crop_top=not args.no_auto_crop_top,
                 auto_crop_bottom=not args.no_auto_crop_bottom,
                 detect_footer=not args.no_footer,
+                ocr_strategy=args.ocr_strategy,
                 on_empty=args.on_empty,
                 table_strategy=args.table_strategy,
             )
