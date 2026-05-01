@@ -76,23 +76,12 @@ def main():
         ),
     )
     parser.add_argument(
-        "--on-empty",
-        choices=["ignore", "warn", "ocr", "auto"],
-        default=None,
-        help=(
-            "Deprecated alias for --ocr-strategy. "
-            "Use 'ignore' -> 'never' and 'ocr' -> 'force'."
-        ),
-    )
-    parser.add_argument(
         "--table-strategy",
         choices=["lines", "lines_strict", "text"],
         default=None,
         help="PyMuPDF table detection strategy. Use 'text' for tables without borders.",
     )
     args = parser.parse_args()
-    if args.ocr_strategy is not None and args.on_empty is not None:
-        parser.error("--on-empty is deprecated; use only --ocr-strategy.")
 
     logging.basicConfig(
         level=logging.WARNING,
@@ -130,7 +119,6 @@ def main():
                 auto_crop_bottom=not args.no_auto_crop_bottom,
                 detect_footer=not args.no_footer,
                 ocr_strategy=args.ocr_strategy,
-                on_empty=args.on_empty,
                 table_strategy=args.table_strategy,
             )
             out_name = os.path.splitext(filename)[0] + ".txt"

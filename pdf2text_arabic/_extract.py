@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import warnings
 from pathlib import Path
 from statistics import median
 from dataclasses import dataclass
@@ -29,15 +28,8 @@ from ._text import (
 log = logging.getLogger(__name__)
 
 OcrStrategy: TypeAlias = Literal["never", "warn", "auto", "force"]
-LegacyOnEmpty: TypeAlias = Literal["ignore", "warn", "ocr", "auto"]
 
 _VALID_OCR_STRATEGIES = {"never", "warn", "auto", "force"}
-_LEGACY_ON_EMPTY_MAP: dict[str, OcrStrategy] = {
-    "ignore": "never",
-    "warn": "warn",
-    "auto": "auto",
-    "ocr": "force",
-}
 
 # Superscript detection: a digit-only span is treated as a footnote
 # indicator when its font size is ≤ this fraction of the page's dominant
@@ -61,11 +53,10 @@ _PAGE_NUMBER_BOTTOM_PCT = 0.12
 
 def _resolve_ocr_strategy(
     ocr_strategy: OcrStrategy | None = None,
-    on_empty: LegacyOnEmpty | None = None,
     *,
     default: OcrStrategy = "warn",
 ) -> OcrStrategy:
-    """Normalize the new OCR strategy option and deprecated ``on_empty`` alias."""
+    """Normalize the OCR strategy option."""
     if default not in _VALID_OCR_STRATEGIES:
         raise ValueError(f"Invalid default OCR strategy: {default!r}")
 
@@ -74,25 +65,6 @@ def _resolve_ocr_strategy(
         raise ValueError(
             "ocr_strategy must be one of: 'never', 'warn', 'auto', 'force'."
         )
-
-    if on_empty is not None:
-        if on_empty not in _LEGACY_ON_EMPTY_MAP:
-            raise ValueError(
-                "on_empty must be one of: 'ignore', 'warn', 'auto', 'ocr'."
-            )
-
-        legacy_strategy = _LEGACY_ON_EMPTY_MAP[on_empty]
-        warnings.warn(
-            "on_empty is deprecated; use ocr_strategy instead "
-            "('ignore' -> 'never', 'ocr' -> 'force').",
-            DeprecationWarning,
-            stacklevel=3,
-        )
-        if ocr_strategy is not None and legacy_strategy != strategy:
-            raise ValueError(
-                "Use either ocr_strategy or on_empty; received conflicting values."
-            )
-        strategy = legacy_strategy
 
     return cast(OcrStrategy, strategy)
 
@@ -153,8 +125,7 @@ class ExtractionResult:
         mixed_pages: 1-based page numbers that contain extractable text
             AND a rasterized image block whose content is NOT in the text
             layer (e.g. a table baked into an image). OCR behavior is
-            controlled by ``ocr_strategy``. ``on_empty`` is kept as a
-            deprecated compatibility alias.
+            controlled by ``ocr_strategy``.
         warnings: Machine-readable warning messages (``empty_page:N`` and
             ``mixed_page:N`` entries).
     """
@@ -749,7 +720,6 @@ def extract_page(
     auto_crop_bottom: bool = True,
     detect_footer: bool = True,
     ocr_strategy: OcrStrategy | None = None,
-    on_empty: LegacyOnEmpty | None = None,
     table_strategy: str | None = None,
     gemini_model: str = DEFAULT_GEMINI_MODEL,
 ) -> tuple[str, dict | None]:
@@ -767,7 +737,7 @@ def extract_page(
     original_clip = fitz.Rect(clip)
 
     # 2. CONTENT DETECTION
-    strategy = _resolve_ocr_strategy(ocr_strategy=ocr_strategy, on_empty=on_empty)
+    strategy = _resolve_ocr_strategy(ocr_strategy=ocr_strategy)
     is_empty_selectable = _is_empty_page(page, original_clip)
     selectable_text = page.get_text("text", clip=original_clip)
     is_scrambled_selectable = looks_like_scrambled_arabic(selectable_text)
@@ -897,7 +867,6 @@ def extract_pdf(
     auto_crop_bottom: bool = True,
     detect_footer: bool = True,
     ocr_strategy: OcrStrategy | None = None,
-    on_empty: LegacyOnEmpty | None = None,
     table_strategy: str | None = None,
     gemini_model: str = DEFAULT_GEMINI_MODEL,
 ) -> str:
@@ -910,7 +879,6 @@ def extract_pdf(
         auto_crop_bottom=auto_crop_bottom,
         detect_footer=detect_footer,
         ocr_strategy=ocr_strategy,
-        on_empty=on_empty,
         table_strategy=table_strategy,
         gemini_model=gemini_model,
     ).text
@@ -926,7 +894,6 @@ def extract_pdf_result(
     auto_crop_bottom: bool = True,
     detect_footer: bool = True,
     ocr_strategy: OcrStrategy | None = None,
-    on_empty: LegacyOnEmpty | None = None,
     table_strategy: str | None = None,
     gemini_model: str = DEFAULT_GEMINI_MODEL,
 ) -> ExtractionResult:
@@ -934,7 +901,7 @@ def extract_pdf_result(
     if not path.exists() or not path.is_file():
         raise InvalidPDFPathError(f"PDF path not found: {pdf_path}")
 
-    strategy = _resolve_ocr_strategy(ocr_strategy=ocr_strategy, on_empty=on_empty)
+    strategy = _resolve_ocr_strategy(ocr_strategy=ocr_strategy)
 
     if strategy in ("force", "auto"):
         if not gemini_available():

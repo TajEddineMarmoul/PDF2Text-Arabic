@@ -263,7 +263,7 @@ print(result.text)
 
 ## OCR Strategy
 
-`ocr_strategy` controls when the extractor is allowed to call OCR. The old `on_empty` option is still accepted as a deprecated alias for compatibility.
+`ocr_strategy` controls when the extractor is allowed to call OCR.
 
 | Strategy | Behavior |
 |---|---|
@@ -271,15 +271,6 @@ print(result.text)
 | `never` | Does not call OCR. Useful when you want to inspect the selectable layer or debug image regions. |
 | `auto` | If the page has image-only content or no reliable selectable text, sends the cropped full page to OCR. |
 | `force` | Forces OCR for the cropped full page. |
-
-Legacy mapping:
-
-| Deprecated `on_empty` | Use `ocr_strategy` |
-|---|---|
-| `ignore` | `never` |
-| `warn` | `warn` |
-| `auto` | `auto` |
-| `ocr` | `force` |
 
 Important: full-page OCR uses only the geometric crop from `crop_top`, `crop_bottom`, `crop_unit`, `auto_crop_top`, and `auto_crop_bottom`. It does not use `detect_footer` to shrink the OCR image. This protects scanned pages from false footer crops.
 
@@ -393,7 +384,6 @@ Extract all pages and return one text string.
 | `auto_crop_bottom` | `bool` | `True` | Auto-adjust bottom crop for page numbers. |
 | `detect_footer` | `bool` | `True` | Detect and remove footnote/reference footers for selectable-text extraction. |
 | `ocr_strategy` | <code>"never" &#124; "warn" &#124; "auto" &#124; "force"</code> | `"warn"` | OCR decision strategy. |
-| `on_empty` | <code>"ignore" &#124; "warn" &#124; "auto" &#124; "ocr"</code> | deprecated | Compatibility alias for `ocr_strategy`. |
 | `table_strategy` | <code>str &#124; None</code> | `None` | Optional PyMuPDF table strategy, for example `"lines"`, `"lines_strict"`, or `"text"`. |
 | `gemini_model` | `str` | `"gemini-3-flash-preview"` | Gemini model for OCR. |
 

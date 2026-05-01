@@ -13,7 +13,6 @@ from typing import Any, Literal
 import fitz
 
 from ._extract import (
-    LegacyOnEmpty,
     OcrStrategy,
     _PAGE_NUMBER_BOTTOM_PCT,
     _body_font_size,
@@ -41,7 +40,6 @@ def get_debug_pixmap(
     auto_crop_bottom: bool = True,
     detect_footer: bool = True,
     ocr_strategy: OcrStrategy | None = None,
-    on_empty: LegacyOnEmpty | None = None,
 ) -> fitz.Pixmap:
     """Perform layout analysis and return a Pixmap with debug overlays."""
     
@@ -69,7 +67,6 @@ def get_debug_pixmap(
     )
     strategy = _resolve_ocr_strategy(
         ocr_strategy=ocr_strategy,
-        on_empty=on_empty,
         default="auto",
     )
 
