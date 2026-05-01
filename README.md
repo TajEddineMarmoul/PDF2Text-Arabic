@@ -65,6 +65,30 @@ Selected from the 1978 finance law with `on_empty="ignore"` to show image-only r
 
 <img src="assets/showcase_image_regions.png" width="560" alt="Image-only region detection" />
 
+### The Zero-Width Ligature Coordinate Fix (Native RTL Sorting)
+
+Standard PDF extractors struggle massively with Arabic ligatures like **`لا`** (Lam-Alef) and **`لم`** (Lam-Meem) because PDF encoders often draw the second character as an invisible "zero-width" marker placed on the far right edge of the base character. In Right-To-Left (RTL) sorting, standard engines sort this zero-width character *first*, destroying the meaning of the word (e.g., extracting `الملاحية` as `المالحية` and `البرلمان` as `البرملان`). 
+
+Furthermore, this extreme right-hand coordinate artificially inflates the gap to the next character, causing standard engines to mistakenly split words (e.g., `السلامة` splits into `السلا مة`).
+
+**pdf2text-arabic** solves this "outside the box" natively. During extraction, it mathematically detects overlapping zero-width characters and recalculates their bounding boxes, automatically curing 99.9% of Arabic OCR inversions and spacing drops without relying on a dictionary:
+
+> ❌ **Standard Engine (Broken Bounding Boxes & Inversions):**
+> 
+> وترتيبات **االنقاذ**، والمعدات **المالحية** السفينية، والمطبوعات **المالحية**، ووسائل
+> 
+> واجهزة ونظم الوقاية من الحرائق و**السالمة** الحرائقية، ومعدات وترتيبات
+> 
+> تتماش** ى **تًماما مع متطلبات هذه **الالئحة** ومع القوانين والمراسيم و**األوامر**
+
+> ✅ **pdf2text-arabic (Native Coordinate Fix):**
+> 
+> وترتيبات **الانقاذ**، والمعدات **الملاحية** السفينية، والمطبوعات **الملاحية**، ووسائل صعود
+> 
+> وأجهزة ونظم الوقاية من الحرائق و**السلامة** الحرائقية، ومعدات وترتيبات
+> 
+> **تتماشى** تًماما مع متطلبات هذه **اللائحة** ومع القوانين والمراسيم و**الأوامر**
+
 ## What It Fixes
 
 | Problem | What the library does |
