@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/compare/v1.0.0...v1.1.0) (2026-05-01)
+
+
+### Features
+
+* update release workflow and bump pdf2text-arabic version to 1.0.0 ([42e725a](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/commit/42e725aa78f0a96daab5b8f03b7f4e5feb0a39d8))
+
 ## [1.0.0](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/compare/v0.5.0...v1.0.0) (2026-05-01)
 
 
