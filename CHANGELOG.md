@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.0.0](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/compare/v0.5.0...v1.0.0) (2026-05-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* native RTL coordinate swap to fix ligature inversions globally
+
+### Features
+
+* added more edge cases ([9d41d2f](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/commit/9d41d2f6489ea9cec56d29dde00dee21e3829d7f))
+* fix more encodings ([36f1c2f](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/commit/36f1c2feb0c5620e61e1f1afc033bc0426f39cd8))
+* fixed more encoding problems ([7afd870](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/commit/7afd870c69ae63d0d2451750b313eb039d4d5e95))
+* native RTL coordinate swap to fix ligature inversions globally ([2a643f1](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/commit/2a643f16907e54344e58b8495277e91bfda510a4))
+* update OCR word fixes and improve token repair logic ([99efd42](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/commit/99efd42da622d7fe728e987ba00bd34e8a5248de))
+
+
+### Documentation
+
+* add section on zero-width ligature coordinate fix for native RTL sorting ([cc6cbf8](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/commit/cc6cbf87abbfcf7727b55a7488d1af015b28629a))
+
 ## [0.5.0](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/compare/v0.4.0...v0.5.0) (2026-04-26)
 
 
