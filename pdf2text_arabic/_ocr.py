@@ -101,7 +101,16 @@ def run_ocr(
                 model=model,
                 contents=[_GEMINI_OCR_PROMPT, img],
             )
+            
             text = (response.text or "").strip()
+            
+            if not text and response.candidates:
+                candidate = response.candidates[0]
+                # If there's a reason other than STOP (like RECITATION, SAFETY)
+                if candidate.finish_reason and candidate.finish_reason.name != "STOP":
+                    reason = candidate.finish_reason.name
+                    text = f"[Gemini OCR blocked: {reason}]"
+
             if text:
                 results.append((region.y0, text))
         except Exception as exc:

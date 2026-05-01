@@ -160,7 +160,7 @@ def _collect_superscript_tips(
                 sz = span.get("size", 0)
                 txt = _span_text(span)
                 digit_match = "".join(filter(str.isdigit, txt))
-                
+
                 if digit_match:
                     # A tip must be a small digit attached to larger nearby text.
                     # This rejects isolated small printed numbers in indexes/tables.
@@ -175,7 +175,38 @@ def _collect_superscript_tips(
                             and sz < block_dominant_size * 0.9
                         )
                     )
-                        
+
+                    if is_tip:
+                        # A real superscript is a LONE small digit. Reject when
+                        # the candidate is part of a hierarchical numbering
+                        # pattern (e.g. "3-7-1", "2-", "1.2.3"): either another
+                        # small digit of the same font/size or a dash/dot-only
+                        # separator sits within ~30px in the same block.
+                        sx0, sy0, sx1, sy1 = span.get("bbox", [0, 0, 0, 0])
+                        span_font = span.get("font")
+                        for other in block_spans:
+                            if other is span:
+                                continue
+                            other_txt = _span_text(other)
+                            if not other_txt:
+                                continue
+                            is_sibling_digit = (
+                                any(c.isdigit() for c in other_txt)
+                                and other.get("font") == span_font
+                                and abs(other.get("size", 0) - sz) < 0.5
+                            )
+                            is_separator = all(
+                                c in "-‐‑‒–—./" for c in other_txt
+                            )
+                            if not (is_sibling_digit or is_separator):
+                                continue
+                            ox0, oy0, ox1, oy1 = other.get("bbox", [0, 0, 0, 0])
+                            dx = max(0.0, max(sx0, ox0) - min(sx1, ox1))
+                            dy = max(0.0, max(sy0, oy0) - min(sy1, oy1))
+                            if dx <= 30 and dy <= 30:
+                                is_tip = False
+                                break
+
                     if is_tip:
                         y_bottom = span["bbox"][3]
                         tips.setdefault(digit_match, []).append(y_bottom)

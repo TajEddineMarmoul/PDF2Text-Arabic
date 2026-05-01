@@ -345,45 +345,98 @@ def _auto_detect_top_y(page: fitz.Page) -> float | None:
 
 
 def _auto_detect_bottom_y(page: fitz.Page) -> float | None:
-    """Scan the bottom margin of the page for a page number text.
+    """Scan the bottom margin for a page number or repeating footer image.
 
     Returns the boundary Y coordinate (minus a 5px margin) if the outermost
-    text block in the margin is a page number, else None.
+    element in the bottom margin is a page number, or a repeating image
+    matched by its digest across adjacent pages, else None.
     """
+    doc = page.parent
     rect = page.rect
-    margin = rect.height * _PAGE_NUMBER_BOTTOM_PCT
-    clip = fitz.Rect(rect.x0, rect.y1 - margin, rect.x1, rect.y1)
+    text_margin = rect.height * _PAGE_NUMBER_BOTTOM_PCT
+    image_margin = rect.height * 0.15
+    text_clip = fitz.Rect(rect.x0, rect.y1 - text_margin, rect.x1, rect.y1)
+    image_clip = fitz.Rect(rect.x0, rect.y1 - image_margin, rect.x1, rect.y1)
 
-    rawdict = page.get_text("rawdict", clip=clip)
-    valid_blocks = []
+    def get_bottom_blocks(p: fitz.Page):
+        rawdict = p.get_text("rawdict", clip=text_clip)
+        blocks = []
+        for b in rawdict.get("blocks", []):
+            if "lines" not in b:
+                continue
+            text = "".join(
+                c.get("c", "")
+                for l in b["lines"]
+                for s in l["spans"]
+                for c in s["chars"]
+            ).strip()
+            if not text:
+                continue
+            blocks.append(
+                {
+                    "text": text,
+                    "bbox": b["bbox"],
+                    "cy": (b["bbox"][1] + b["bbox"][3]) / 2,
+                    "block": b,
+                }
+            )
+        blocks.sort(key=lambda x: x["cy"])
+        return blocks
 
-    for block in rawdict.get("blocks", []):
-        if "lines" not in block:
-            continue
+    def get_bottom_images(p: fitz.Page):
+        images = []
+        try:
+            for info in p.get_image_info(hashes=True):
+                ir = fitz.Rect(info["bbox"])
+                # Must be in the bottom margin AND be a small logo (< 20% of page height)
+                # This protects against cropping full-page scanned images.
+                if ir.y1 > image_clip.y0 and ir.height < rect.height * 0.2:
+                    images.append(
+                        {
+                            "bbox": info["bbox"],
+                            "cy": (ir.y0 + ir.y1) / 2,
+                            "digest": info.get("digest"),
+                        }
+                    )
+        except Exception:
+            pass
+        images.sort(key=lambda x: x["cy"])
+        return images
 
-        block_text = "".join(
-            c.get("c", "")
-            for line in block.get("lines", [])
-            for span in line.get("spans", [])
-            for c in span.get("chars", [])
-        ).strip()
+    curr_blocks = get_bottom_blocks(page)
+    curr_images = get_bottom_images(page)
 
-        if not block_text:
-            continue
+    last_text = curr_blocks[-1] if curr_blocks else None
+    last_img = curr_images[-1] if curr_images else None
 
-        cy = (block["bbox"][1] + block["bbox"][3]) / 2
-        valid_blocks.append(
-            {"text": block_text, "cy": cy, "bbox": block["bbox"], "block": block}
-        )
+    outermost_type = None
+    if last_text and last_img:
+        outermost_type = "text" if last_text["cy"] > last_img["cy"] else "image"
+    elif last_text:
+        outermost_type = "text"
+    elif last_img:
+        outermost_type = "image"
 
-    if not valid_blocks:
+    if not outermost_type:
         return None
 
-    valid_blocks.sort(key=lambda x: x["cy"])
-    last_block = valid_blocks[-1]
+    if outermost_type == "text":
+        # 1. Is it a standalone page number?
+        if _is_page_number_block(last_text["block"], rect.y0, rect.y1 - text_margin):
+            return last_text["bbox"][1] - 5
 
-    if _is_page_number_block(last_block["block"], rect.y0, rect.y1 - margin):
-        return last_block["bbox"][1] - 5  # by0 - 5
+    elif outermost_type == "image":
+        # 2. Is it a repeating image footer?
+        if doc and last_img.get("digest"):
+            if page.number > 0:
+                prev_images = get_bottom_images(doc[page.number - 1])
+                if prev_images and prev_images[-1].get("digest") == last_img["digest"]:
+                    return last_img["bbox"][1] - 5
+
+            if page.number < len(doc) - 1:
+                next_images = get_bottom_images(doc[page.number + 1])
+                if next_images and next_images[-1].get("digest") == last_img["digest"]:
+                    return last_img["bbox"][1] - 5
 
     return None
 

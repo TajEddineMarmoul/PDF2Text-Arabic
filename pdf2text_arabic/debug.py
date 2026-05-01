@@ -212,10 +212,28 @@ def get_debug_pixmap(
 
 def draw_page_layout(
     page: fitz.Page,
-    **kwargs,
+    *,
+    dpi: int = 150,
+    crop_top: float = 8.0,
+    crop_bottom: float = 4.5,
+    crop_unit: Literal["px", "pct"] = "pct",
+    auto_crop_top: bool = True,
+    auto_crop_bottom: bool = True,
+    detect_footer: bool = True,
+    ocr_strategy: OcrStrategy | None = None,
 ) -> None:
     """Render *page* with extraction overlays and show it inline."""
     from IPython.display import Image, display
 
-    pix = get_debug_pixmap(page, **kwargs)
+    pix = get_debug_pixmap(
+        page,
+        dpi=dpi,
+        crop_top=crop_top,
+        crop_bottom=crop_bottom,
+        crop_unit=crop_unit,
+        auto_crop_top=auto_crop_top,
+        auto_crop_bottom=auto_crop_bottom,
+        detect_footer=detect_footer,
+        ocr_strategy=ocr_strategy,
+    )
     display(Image(data=pix.tobytes("png")))
