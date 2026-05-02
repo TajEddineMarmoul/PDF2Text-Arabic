@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.0](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/compare/v1.3.0...v1.4.0) (2026-05-02)
+
+
+### Features
+
+* implement trim_to_content function for improved OCR region handling ([02b42ec](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/commit/02b42ec1cf36d6a14892535ced67fb17533478f8))
+* update OCR parameters and add A/B test for DPI settings ([28570e6](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/commit/28570e60f55e37e9a0464ce3519d0ef9ba1f7abf))
+
 ## [1.3.0](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/compare/v1.2.2...v1.3.0) (2026-05-02)
 
 
