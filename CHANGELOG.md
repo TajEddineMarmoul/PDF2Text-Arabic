@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.3.0](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/compare/v1.2.2...v1.3.0) (2026-05-02)
+
+
+### Features
+
+* add single page testing script for PDF text extraction ([97347e3](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/commit/97347e3002d460b48be1885b71f45f5243754c7f))
+
+
+### Bug Fixes
+
+* update default OCR strategy to 'force' for improved text extraction ([97347e3](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/commit/97347e3002d460b48be1885b71f45f5243754c7f))
+
 ## [1.2.2](https://github.com/TajEddineMarmoul/PDF2Text-Arabic/compare/v1.2.1...v1.2.2) (2026-05-01)
 
 
