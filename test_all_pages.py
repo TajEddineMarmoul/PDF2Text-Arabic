@@ -22,7 +22,7 @@ def process_full_pdf(pdf_path):
         # 1. Force a PRISTINE page reload for text extraction
         page_text = doc_text.load_page(p_num)
         text, _ = extract_page(
-            page_text, crop_bottom=0, crop_top=0, ocr_strategy="warn"
+            page_text, crop_bottom=0, crop_top=0, ocr_strategy="force"
         )
 
         txt_path = os.path.join(pdf_out_dir, f"page_{p_num+1:03d}.txt")
@@ -31,9 +31,7 @@ def process_full_pdf(pdf_path):
 
         # 2. Use a separate page instance for visuals
         page_vis = doc_vis.load_page(p_num)
-        pix = get_debug_pixmap(
-            page_vis, dpi=120, ocr_strategy="auto"
-        )
+        pix = get_debug_pixmap(page_vis, dpi=120, ocr_strategy="force")
         img_path = os.path.join(pdf_out_dir, f"page_{p_num+1:03d}.png")
         pix.save(img_path)
 

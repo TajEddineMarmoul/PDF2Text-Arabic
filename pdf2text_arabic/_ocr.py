@@ -10,9 +10,8 @@ from __future__ import annotations
 
 import fitz
 
-
 # Default Gemini model used for OCR. Override via ``gemini_model`` kwarg.
-DEFAULT_GEMINI_MODEL = "gemini-3-flash-preview"
+DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite-preview"
 
 # Prompt for Gemini OCR that emits the pipeline's native RAG block format
 # for tables (no Markdown pipes) and strips footnotes/headers/page numbers.
@@ -26,11 +25,20 @@ Column 1 Header | Column 2 Header | Column 3 Header
 Row 1 Data 1 | Row 1 Data 2 | Row 1 Data 3
 Row 2 Data 1 | | Row 2 Data 3
 
+TABLE ROW STRUCTURE (MANDATORY):
+1. ROW CONTINUITY: A single logical row is one horizontal band in the source. Its text may wrap across 2+ visual lines (especially long Arabic descriptions). Merge all wrapped lines belonging to the same band into ONE pipe-separated output row. NEVER emit the description on its own line separate from the row's number/identifier.
+2. COLUMN ALIGNMENT WITH HEADER: The header row defines the meaning of each column position. Every data row must place each value under the SAME column position as the header — e.g., if the header is "الرقم | البند | النقط", then a data row must be "07 | description text | 6", NOT " | | 07". A bare number on its own with two empty cells is almost always wrong; it means you split the row.
+3. CONSISTENT CELL COUNT: Every data row must have exactly the same number of pipe-separated cells as the header. Pad with empty cells (` | `) only for cells that are genuinely blank in the source.
+4. SANITY CHECK: Before outputting a row like ` | | X`, ask whether the description for that row appears on the next line. If yes, merge them: `X | description | points`.
+
 EXCLUSIONS:
 Strictly ignore and DO NOT extract any footnotes at the bottom of the page. You must also ignore and remove any superscript footnote markers (e.g., ¹, ², ³) embedded within the main text. Ignore all page headers, page numbers, and stamps. Only extract the core body content.
 
 REPEATING HEADERS AND PAGE NUMBERS:
-The top of each page often contains a repeating masthead or running header (e.g., "الجريدة الرسمية عدد XXXX", issue date, logos, or decorative rule lines). The bottom often contains a standalone page number (digits, sometimes wrapped like "-12-" or "(12)"). These elements are NOT body content. Skip them completely even if the geometric crop did not fully remove them. If the very first visible line is clearly a running masthead and not body prose, drop it. If the very last visible line is just a number, drop it."""
+The top of each page often contains a repeating masthead or running header (e.g., "الجريدة الرسمية عدد XXXX", issue date, logos, or decorative rule lines). The bottom often contains a standalone page number (digits, sometimes wrapped like "-12-" or "(12)"). These elements are NOT body content. Skip them completely even if the geometric crop did not fully remove them. If the very first visible line is clearly a running masthead and not body prose, drop it. If the very last visible line is just a number, drop it.
+
+CONTEXTUAL CORRECTION (NARROW):
+If a word is clearly an OCR misread that produces a non-word or breaks the surrounding sentence, correct it to the obviously intended Arabic word based on context. Apply this only when the correction is unambiguous — one and only one right answer. Never paraphrase, modernize, reorder, or change legal/administrative terminology. When in doubt, keep the original characters as seen."""
 
 
 def gemini_available() -> bool:
@@ -101,9 +109,9 @@ def run_ocr(
                 model=model,
                 contents=[_GEMINI_OCR_PROMPT, img],
             )
-            
+
             text = (response.text or "").strip()
-            
+
             if not text and response.candidates:
                 candidate = response.candidates[0]
                 # If there's a reason other than STOP (like RECITATION, SAFETY)
