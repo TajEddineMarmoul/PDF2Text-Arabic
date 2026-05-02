@@ -25,6 +25,7 @@ from ._extract import (
     detect_footer_y,
     order_reading_rtl,
 )
+from ._ocr import trim_to_content
 from ._tables import extract_tables
 from ._text import looks_like_scrambled_arabic
 
@@ -160,6 +161,12 @@ def get_debug_pixmap(
         elif (r.x0 + r.x1) / 2 > mid_x: color = (0, 0.7, 0) # Green
         else: color = (0.8, 0, 0) # Red
 
+        if it["type"] == "IMAGE":
+            trimmed = trim_to_content(page, r)
+            if trimmed != r:
+                page.draw_rect(r, color=(0.7, 0.4, 0.7), width=1, dashes="[2 2] 0")
+            r = trimmed
+
         width = 1 if it["type"] == "SUPERSCRIPT" else 2
         page.draw_rect(r, color=color, width=width)
 
@@ -177,8 +184,11 @@ def get_debug_pixmap(
         page.insert_text((bg.x0 + 1, text_y), label, color=(0, 0, 1), fontsize=FONT_SIZE, fontname="helv")
 
     if full_page_ocr:
+        ocr_clip = trim_to_content(page, original_clip)
+        if ocr_clip != original_clip:
+            page.draw_rect(original_clip, color=(0.7, 0.4, 0.7), width=1, dashes="[3 3] 0")
         page.draw_rect(
-            original_clip,
+            ocr_clip,
             color=(1, 0, 1),
             fill=(1, 0, 1),
             fill_opacity=0.08,

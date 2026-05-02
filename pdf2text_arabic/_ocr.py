@@ -8,7 +8,17 @@ post-processing is needed.
 
 from __future__ import annotations
 
+import io
+
 import fitz
+
+# Whitespace-trim defaults applied before each OCR call to shrink the image
+# sent to Gemini. Pixels with a grayscale value at or above ``TRIM_THRESHOLD``
+# are treated as background; ``TRIM_PADDING_PX`` is added back as a margin
+# (measured in pixels at ``TRIM_SAMPLE_DPI``).
+TRIM_THRESHOLD = 250
+TRIM_PADDING_PX = 12
+TRIM_SAMPLE_DPI = 72
 
 # Default Gemini model used for OCR. Override via ``gemini_model`` kwarg.
 DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite-preview"
@@ -41,6 +51,50 @@ CONTEXTUAL CORRECTION (NARROW):
 If a word is clearly an OCR misread that produces a non-word or breaks the surrounding sentence, correct it to the obviously intended Arabic word based on context. Apply this only when the correction is unambiguous — one and only one right answer. Never paraphrase, modernize, reorder, or change legal/administrative terminology. When in doubt, keep the original characters as seen."""
 
 
+def trim_to_content(
+    page: fitz.Page,
+    rect: fitz.Rect,
+    *,
+    threshold: int = TRIM_THRESHOLD,
+    padding_px: int = TRIM_PADDING_PX,
+    sample_dpi: int = TRIM_SAMPLE_DPI,
+) -> fitz.Rect:
+    """Return a sub-rect of *rect* that excludes near-white margins.
+
+    Renders *rect* at ``sample_dpi``, treats any pixel below ``threshold`` as
+    content, and maps the content bbox back to PDF coordinates with a
+    ``padding_px`` margin (measured at the sample DPI). Returns *rect*
+    unchanged if the area is entirely blank.
+    """
+    from PIL import Image
+
+    pix = page.get_pixmap(clip=rect, dpi=sample_dpi)
+    img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("L")
+
+    mask = img.point(lambda p: 255 if int(p) < threshold else 0)
+    bbox = mask.getbbox()
+    if bbox is None:
+        return fitz.Rect(rect)
+
+    px_w, px_h = img.size
+    if px_w == 0 or px_h == 0:
+        return fitz.Rect(rect)
+
+    rect_w, rect_h = rect.width, rect.height
+    x0_frac = bbox[0] / px_w
+    y0_frac = bbox[1] / px_h
+    x1_frac = bbox[2] / px_w
+    y1_frac = bbox[3] / px_h
+
+    pad_pdf = padding_px * 72.0 / sample_dpi
+    return fitz.Rect(
+        max(rect.x0, rect.x0 + x0_frac * rect_w - pad_pdf),
+        max(rect.y0, rect.y0 + y0_frac * rect_h - pad_pdf),
+        min(rect.x1, rect.x0 + x1_frac * rect_w + pad_pdf),
+        min(rect.y1, rect.y0 + y1_frac * rect_h + pad_pdf),
+    )
+
+
 def gemini_available() -> bool:
     """Return True if the google-genai library is installed."""
     try:
@@ -70,6 +124,7 @@ def run_ocr(
     regions: list[fitz.Rect],
     *,
     model: str = DEFAULT_GEMINI_MODEL,
+    trim_whitespace: bool = True,
 ) -> list[tuple[float, str]]:
     """Run Gemini OCR on specific image regions of a page.
 
@@ -77,6 +132,8 @@ def run_ocr(
         page: PyMuPDF page.
         regions: Image regions to OCR.
         model: Gemini model id (default: ``DEFAULT_GEMINI_MODEL``).
+        trim_whitespace: Crop near-white margins off each region before
+            rendering, to reduce the image size sent to Gemini.
 
     Returns extracted text tuples keyed by region y-top.
     """
@@ -88,7 +145,6 @@ def run_ocr(
 
     from google import genai
     from PIL import Image
-    import io
 
     api_key = load_gemini_api_key()
     if not api_key:
@@ -100,7 +156,8 @@ def run_ocr(
     results: list[tuple[float, str]] = []
 
     for idx, region in enumerate(regions):
-        pix = page.get_pixmap(clip=region, dpi=300)
+        clip = trim_to_content(page, region) if trim_whitespace else region
+        pix = page.get_pixmap(clip=clip, dpi=300)
 
         img = Image.open(io.BytesIO(pix.tobytes("png")))
 
