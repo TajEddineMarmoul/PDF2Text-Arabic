@@ -22,7 +22,7 @@ else:
     # 1. Extract text on a pristine page instance
     page_text = doc_text.load_page(page_index)
     try:
-        text, _ = extract_page(page_text, ocr_strategy="auto")
+        text, _ = extract_page(page_text, ocr_strategy="force")
         txt_path = os.path.join(output_dir, f"page_{page_number:03d}.txt")
         with open(txt_path, "w", encoding="utf-8") as f:
             f.write(text)
@@ -32,7 +32,7 @@ else:
 
     # 2. Save debug overlay image on a separate page instance
     page_vis = doc_vis.load_page(page_index)
-    pix = get_debug_pixmap(page_vis, dpi=120, ocr_strategy="auto")
+    pix = get_debug_pixmap(page_vis, dpi=120, ocr_strategy="force")
     img_path = os.path.join(output_dir, f"page_{page_number:03d}.png")
     pix.save(img_path)
     print(f"Debug image saved to {img_path}")

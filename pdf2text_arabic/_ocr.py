@@ -14,14 +14,17 @@ import fitz
 
 # Whitespace-trim defaults applied before each OCR call to shrink the image
 # sent to Gemini. Pixels with a grayscale value at or above ``TRIM_THRESHOLD``
-# are treated as background; ``TRIM_PADDING_PX`` is added back as a margin
-# (measured in pixels at ``TRIM_SAMPLE_DPI``).
+# are treated as background; ``TRIM_PADDING_PT`` is the safety margin added
+# back to the content bbox in PDF points (1 pt = 1/72 inch).
 TRIM_THRESHOLD = 250
-TRIM_PADDING_PX = 12
-TRIM_SAMPLE_DPI = 72
+TRIM_PADDING_PT = 12.0
+TRIM_SAMPLE_DPI = 50
 
 # Default Gemini model used for OCR. Override via ``gemini_model`` kwarg.
 DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite-preview"
+
+# DPI used to render each OCR region before sending to Gemini.
+DEFAULT_OCR_DPI = 300
 
 # Prompt for Gemini OCR that emits the pipeline's native RAG block format
 # for tables (no Markdown pipes) and strips footnotes/headers/page numbers.
@@ -56,42 +59,39 @@ def trim_to_content(
     rect: fitz.Rect,
     *,
     threshold: int = TRIM_THRESHOLD,
-    padding_px: int = TRIM_PADDING_PX,
+    padding_pt: float = TRIM_PADDING_PT,
     sample_dpi: int = TRIM_SAMPLE_DPI,
 ) -> fitz.Rect:
     """Return a sub-rect of *rect* that excludes near-white margins.
 
     Renders *rect* at ``sample_dpi``, treats any pixel below ``threshold`` as
     content, and maps the content bbox back to PDF coordinates with a
-    ``padding_px`` margin (measured at the sample DPI). Returns *rect*
-    unchanged if the area is entirely blank.
+    ``padding_pt`` safety margin (in PDF points). Returns *rect* unchanged if
+    the area is entirely blank.
     """
-    from PIL import Image
+    import numpy as np
 
-    pix = page.get_pixmap(clip=rect, dpi=sample_dpi)
-    img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("L")
-
-    mask = img.point(lambda p: 255 if int(p) < threshold else 0)
-    bbox = mask.getbbox()
-    if bbox is None:
-        return fitz.Rect(rect)
-
-    px_w, px_h = img.size
+    pix = page.get_pixmap(clip=rect, dpi=sample_dpi, colorspace=fitz.csGRAY)
+    px_w, px_h = pix.width, pix.height
     if px_w == 0 or px_h == 0:
         return fitz.Rect(rect)
 
-    rect_w, rect_h = rect.width, rect.height
-    x0_frac = bbox[0] / px_w
-    y0_frac = bbox[1] / px_h
-    x1_frac = bbox[2] / px_w
-    y1_frac = bbox[3] / px_h
+    arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(px_h, px_w)
+    mask = arr < threshold
+    rows = np.flatnonzero(mask.any(axis=1))
+    if rows.size == 0:
+        return fitz.Rect(rect)
+    cols = np.flatnonzero(mask.any(axis=0))
 
-    pad_pdf = padding_px * 72.0 / sample_dpi
+    y0_px, y1_px = int(rows[0]), int(rows[-1]) + 1
+    x0_px, x1_px = int(cols[0]), int(cols[-1]) + 1
+
+    rect_w, rect_h = rect.width, rect.height
     return fitz.Rect(
-        max(rect.x0, rect.x0 + x0_frac * rect_w - pad_pdf),
-        max(rect.y0, rect.y0 + y0_frac * rect_h - pad_pdf),
-        min(rect.x1, rect.x0 + x1_frac * rect_w + pad_pdf),
-        min(rect.y1, rect.y0 + y1_frac * rect_h + pad_pdf),
+        max(rect.x0, rect.x0 + x0_px / px_w * rect_w - padding_pt),
+        max(rect.y0, rect.y0 + y0_px / px_h * rect_h - padding_pt),
+        min(rect.x1, rect.x0 + x1_px / px_w * rect_w + padding_pt),
+        min(rect.y1, rect.y0 + y1_px / px_h * rect_h + padding_pt),
     )
 
 
@@ -125,6 +125,7 @@ def run_ocr(
     *,
     model: str = DEFAULT_GEMINI_MODEL,
     trim_whitespace: bool = True,
+    dpi: int = DEFAULT_OCR_DPI,
 ) -> list[tuple[float, str]]:
     """Run Gemini OCR on specific image regions of a page.
 
@@ -134,6 +135,7 @@ def run_ocr(
         model: Gemini model id (default: ``DEFAULT_GEMINI_MODEL``).
         trim_whitespace: Crop near-white margins off each region before
             rendering, to reduce the image size sent to Gemini.
+        dpi: Resolution for the rendered region (default: ``DEFAULT_OCR_DPI``).
 
     Returns extracted text tuples keyed by region y-top.
     """
@@ -157,7 +159,7 @@ def run_ocr(
 
     for idx, region in enumerate(regions):
         clip = trim_to_content(page, region) if trim_whitespace else region
-        pix = page.get_pixmap(clip=clip, dpi=300)
+        pix = page.get_pixmap(clip=clip, dpi=dpi)
 
         img = Image.open(io.BytesIO(pix.tobytes("png")))
 
